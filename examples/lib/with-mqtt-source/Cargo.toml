@@ -1,0 +1,20 @@
+[package]
+name = "with-mqtt-source"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "DrasiLib example demonstrating stock price monitoring with 3 queries"
+
+[workspace]
+
+[dependencies]
+tokio = "1.49.0"
+anyhow = "1.0"
+env_logger = "0.10.0"
+drasi-source-mqtt = { path = "../../../components/sources/mqtt" }
+drasi-lib = { path = "../../../lib" }
+drasi-reaction-log = { path = "../../../components/reactions/log" }
+
+[[bin]]
+name = "three-query-example"
+path = "main.rs"
