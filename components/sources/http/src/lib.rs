@@ -216,7 +216,6 @@
 pub mod config;
 pub use config::HttpSourceConfig;
 
-mod adaptive_batcher;
 mod models;
 mod time;
 
@@ -253,7 +252,7 @@ use drasi_lib::sources::base::{SourceBase, SourceBaseParams};
 use drasi_lib::Source;
 use tracing::Instrument;
 
-use crate::adaptive_batcher::{AdaptiveBatchConfig, AdaptiveBatcher};
+use drasi_lib::sources::common::adaptive_batcher::{AdaptiveBatchConfig, AdaptiveBatcher};
 use crate::auth::{verify_auth, AuthResult};
 use crate::config::{CorsConfig, ErrorBehavior, WebhookConfig};
 use crate::content_parser::{parse_content, ContentType};
