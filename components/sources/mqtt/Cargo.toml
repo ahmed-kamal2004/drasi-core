@@ -21,3 +21,5 @@ log = "0.4"
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 rumqttc = "0.25.1"
+ordered-float = "3.0"
+chrono = "0.4"
