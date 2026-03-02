@@ -1,6 +1,8 @@
-use crate::config::MQTTConnectionConfig;
+use crate::{config::MQTTConnectionConfig, model::{MQTTSourceChange, convert_mqtt_to_source_change, map_json_to_mqtt_source_change}};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
-
+use crate::SourceChangeEvent;
+use log::{debug, error, info, trace, warn};
+use anyhow::{Result};
 pub struct MQTTConnectionWrapper {
     client: Box<AsyncClient>,
     eventloop: Box<EventLoop>,
@@ -51,6 +53,9 @@ impl MQTTConnectionWrapper {
                                 "Received message on topic {}: {:?}",
                                 publish.topic, publish.payload
                             );
+                            let event = map_json_to_mqtt_source_change(&String::from_utf8_lossy(&publish.payload))?;
+                            let source_id = "mqtt-source";
+                            Self::process_events(source_id, event).await?;
                         }
                         _ => {}
                     }
@@ -60,5 +65,35 @@ impl MQTTConnectionWrapper {
                 }
             }
         }
+    }
+
+
+    async fn process_events(
+        source_id: &str,
+        event: MQTTSourceChange,
+    ) -> Result<()> {
+        trace!("[{}] Processing MQTT event", source_id);
+
+        match convert_mqtt_to_source_change(&event, source_id) {
+                Ok(source_change) => {
+                    let change_event = SourceChangeEvent {
+                        source_id: source_id.to_string(),
+                        change: source_change,
+                        timestamp: chrono::Utc::now(),
+                    };
+
+                    println!(
+                        "[{}] Converted MQTT event to SourceChangeEvent: {:?}",
+                        source_id, change_event
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "[{}] Failed to convert MQTT event to SourceChangeEvent: {:?}",
+                        source_id, e
+                    );
+                }
+        }
+        Ok(())
     }
 }

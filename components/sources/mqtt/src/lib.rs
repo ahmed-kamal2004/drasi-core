@@ -19,13 +19,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::{default_channel_capacity, default_qos, default_timeout_ms};
 use crate::model::QualityOfService;
 use drasi_lib::channels::{ComponentType, *};
 use drasi_lib::SourceRuntimeContext;
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, Packet, QoS};
+use drasi_lib::sources::common::adaptive_batcher::{AdaptiveBatchConfig, AdaptiveBatcher};
 
 pub struct MQTTSource {
     base: SourceBase,
