@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod base;
+pub mod common;
 pub mod future_queue_source;
 pub mod manager;
 mod traits;
