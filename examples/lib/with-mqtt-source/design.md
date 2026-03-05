@@ -1,6 +1,13 @@
 # Design Document: Design notes for MQTT source.
 <img width="1163" height="738" alt="Screenshot from 2026-03-05 15-39-12" src="https://github.com/user-attachments/assets/7a6cbec9-5097-444b-9330-2ad4b5bb5c4c" />
 
+## Table of contents
+- [Data Mapping](#1-data-mapping)
+- [Data Format](#2-data-format)
+- [MQTT v5 vs v3.1.1](#3-mqtt-v5-vs-v3.1.1)
+- [Target brokers](#4-target-brokers)
+- [References](#5-references)
+
 ## 1) Data Mapping
 The common cases for payload sent from the sensor to the broker can be in the following shape
 ```json
@@ -148,6 +155,8 @@ But the query becomes less readable, as labels like (`L0` - `L1` -,) will be use
 The middleware will need the topic name, properties only.
 
 ### Middleware
+note: I think this part can be more optimized, after more going through the available options in the codebase and the communciation patterns between the middleware and the continous query.
+
 the middleware should implement this trait `SourceMiddleWare`
 ```rust
 #[async_trait]
@@ -168,22 +177,48 @@ the function `process` accepts element index that has trait `ElementIndex`,
         &self,
         element_ref: &ElementReference,
     ) -> Result<Option<Arc<Element>>, IndexError>;
+
+    async fn set_element(
+        &self,
+        element: &Element,
+        slot_affinity: &Vec<usize>,
+    ) -> Result<(), IndexError>;
 ```
 
-This function `get_element` makes us able to check if a specific element exists in the index,
-// TODO
+The functions `get_element`, `set_element` makes us able to check if a specific element exists in the index, before creating it.
+so the proposed flow can be:
+```pseudo
+// Pseudocode
+for x in set of nodes (except for the final sensor node, as it has different properties) and relations between those nodes:
+  result = get_element(x) // element x (e.g building or room ) exists in the index
+  if result is true: // the element exists
+    do nothing.
+  else
+    set_element(x)
+```
 
 
 ## 2) Data Format
 // TODO
+After doing a brief research, I believe `JSON` format should our primary target, then we can support more formats and the user can specify it as a config.
 
 ## 3) MQTT v5 vs v3.1.1
+- MQTT v5 is backward compatible with v3.1.1
+- (more related to the broker) Supports shared subscriptions (load balancing between subscribers over some algorithm e.g Round Robin).
+- Sessions Expiry (How long should we maintain a session after disconnection), I don't think it is very effictive for client, as most of the time they are connected to few number of brokers
+- Flow Control by broker and client, helpful to control how many messages can be sent without acknowledgement for QoS > 0 (I think this can be helpful in our case, can be added as a configuration).
 
-// TODO
+Summary, I believe MQTT v5 is better for us for multiple reasons, the most imp reason is that it is backward compatible.
 
+## 4) Target brokers
+- Mosquitto
+- HiveMQ
 
-## 2) References
+## 5) References
 - https://www.hivemq.com/blog/mqtt-essentials-part-5-mqtt-topics-best-practices/
 - https://drasi.io/drasi-kubernetes/tutorials/curbside-pickup/
 - https://www.machbase.com/en/post/how-to-make-sensor-data-send-directly-to-a-database-via-mqtt
 - https://drasi.io/reference/query-language/
+- https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901118 (not done yet)
+- https://www.hivemq.com/blog/mqtt5-essentials-part6-user-properties/ (I think this is helpful for MQTT v5, not done yet)
+- https://www.isa.org/standards-and-publications/isa-standards/isa-95-standard
