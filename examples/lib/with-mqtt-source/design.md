@@ -25,10 +25,30 @@ the topic which the payload is sent over could be for example `building-1/floor-
 ### Topic hierarchy
 Designing a topic hierarchy helps organizations to easily and efficiently use topics, allowing controlling access to the multi-level topic hierarchy.
 
-ISA-95 model for topic design is widely used by many organizations.
+ISA-95 model can be used for topic design, and it is widely used by many organizations. (it is from 90s, and it was related more to ERP)
 ```
 Enterprise/Site/Area/ProductionLine/WorkCell/Equipment/DataPoint
 ```
+UNS (Unified namespace) uses topic structure as the backbone
+```yaml
+manufacturing/
+  plantA/
+    sensors/
+      humidity/
+        sensor001
+        sensor002
+    inventory/
+      raw_materials/
+        current_stock
+      finished_goods/
+        current_stock
+    quality_control/
+      inspection/
+        results
+```
+So we can for example subscribe to `manufacturing/plantB/quality_control/testing/#` to receive data on all tests conducted in Plant B.
+
+
 
 
 
