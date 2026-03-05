@@ -106,7 +106,7 @@ temperature -> Sensor
 
 This approach gives the users the freedom to use any names for the topic entities, as long as they are following the structure they specified
 
-One limitation I can think of, is that user needs to specify that hierarchy model, and then this model needs to be known by the middleware for mapping.
+One limitation I can think of, is that user needs to specify this hierarchy model as config, and then this model needs to be known by the middleware for mapping.
 
 ##### Using seperator
 In this approach, a seperator or regex can pre specified by the user as config
@@ -127,6 +127,7 @@ sensor-2 -> sensor
 ```
 
 This approach limits the naming for the topic entities, it needs to follow pattern to be correctly handled.
+middleware will get the pattern, the topic name and the properties, then will map them to `SourceChange` data.
 
 ##### Level mapping
 In this approach, nothing needs to be pre-specified by the user as config
@@ -142,10 +143,36 @@ floor-3 -> L1
 sensor-2 -> L2
 ```
 
-But the query less readable, as labels like (`L0` - `L1` -,) will be used inside the query.
+But the query becomes less readable, as labels like (`L0` - `L1` -,) will be used inside the query.
+
+The middleware will need the topic name, properties only.
 
 ### Middleware
+the middleware should implement this trait `SourceMiddleWare`
+```rust
+#[async_trait]
+pub trait SourceMiddleware: Send + Sync {
+    async fn process(
+        &self,
+        source_change: SourceChange,
+        element_index: &dyn ElementIndex,
+    ) -> Result<Vec<SourceChange>, MiddlewareError>;
+}
+```
+the function `process` accepts element index that has trait `ElementIndex`,
+
+`ElementIndex` has a set of functions, the one we are interested in is
+
+```rust
+    async fn get_element(
+        &self,
+        element_ref: &ElementReference,
+    ) -> Result<Option<Arc<Element>>, IndexError>;
+```
+
+This function `get_element` makes us able to check if a specific element exists in the index,
 // TODO
+
 
 ## 2) Data Format
 // TODO
