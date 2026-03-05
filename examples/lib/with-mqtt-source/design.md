@@ -4,7 +4,7 @@
 ## Table of contents
 - [Data Mapping](#1-data-mapping)
 - [Data Format](#2-data-format)
-- [MQTT v5 vs v3.1.1](#3-mqtt-v5-vs-v3.1.1)
+- [MQTT v5 vs v3.1.1](#3-mqtt-v5-vs-v311)
 - [Target brokers](#4-target-brokers)
 - [References](#5-references)
 
