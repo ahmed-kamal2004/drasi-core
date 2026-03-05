@@ -144,9 +144,15 @@ sensor-2 -> L2
 
 But the query less readable, as labels like (`L0` - `L1` -,) will be used inside the query.
 
+### Middleware
+// TODO
+
 ## 2) Data Format
+// TODO
 
 ## 3) MQTT v5 vs v3.1.1
+
+// TODO
 
 
 ## 2) References
