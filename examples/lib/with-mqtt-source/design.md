@@ -29,7 +29,7 @@ ISA-95 model can be used for topic design, and it is widely used by many organiz
 ```
 Enterprise/Site/Area/ProductionLine/WorkCell/Equipment/DataPoint
 ```
-UNS (Unified namespace) uses topic structure as the backbone
+UNS (Unified namespace) uses topic structure as the backbone.
 ```yaml
 manufacturing/
   plantA/
@@ -48,12 +48,105 @@ manufacturing/
 ```
 So we can for example subscribe to `manufacturing/plantB/quality_control/testing/#` to receive data on all tests conducted in Plant B.
 
+UNS ans ISA-95 are complementary.
 
+### How we can see the hierarchy ?
+In MQTT Source, we are interested in building the hierarchy to allow users write effective queries that exactly match what they need.
 
+an example for a simple use case, which just retrieving the available readings
+```yaml
+MATCH (b:Building {id: "building-1"})
+      -[:HAS_FLOOR]->(f:Floor {id: "floor-2"})
+      -[:HAS_SENSOR]->(s:Sensor {id: "sensor-7"})
+RETURN b.id AS building, f.id AS floor, s.id AS sensor, s.value
+```
+more complex one, it checks if the temperature is more than 25 C for more than 15 secs. 
+```yaml
+MATCH (b:Building)-[:HAS_FLOOR]->(f:Floor)-[:HAS_ROOM]->(r:Room)-[:HAS_SENSOR]->(s:Sensor)
+WHERE s.type = 'temperature'
 
+WITH
+  b, f, r, s,
+  drasi.changeDateTime(s) AS temperatureChangeTime
 
+WHERE
+  temperatureChangeTime != datetime({epochMillis: 0}) AND
+  drasi.trueFor(
+    s.value > 25,
+    duration({ seconds: 15 })
+  )
 
+RETURN
+  b.id AS buildingId,
+  f.id AS floorId,
+  r.id AS roomId,
+  s.id AS sensorId,
+  s.value AS temperature,
+  temperatureChangeTime AS fireRiskDetectedSince
+```
 
+So in order to map the topic hierarchy to the internal schema in the continouos query model, I can think of multiple available options.
+##### Using Hierarchy
+In this approach, the hierarchy model can pre specified by the user as config
+
+for example, if the user specified this hierarchy model
+```
+Building/Floor/Sensor
+```
+then a topic name like 
+```
+campus/the-first-floor/temperature
+```
+can be mapped with labels like 
+```
+campus -> Building
+the-first-floor -> Floor
+temperature -> Sensor
+```
+
+This approach gives the users the freedom to use any names for the topic entities, as long as they are following the structure they specified
+
+One limitation I can think of, is that user needs to specify that hierarchy model, and then this model needs to be known by the middleware for mapping.
+
+##### Using seperator
+In this approach, a seperator or regex can pre specified by the user as config
+
+for example, if the user specified this seperator
+```
+- (dash)
+```
+then a topic name like 
+```
+building-1/floor-3/sensor-2
+```
+can be mapped with labels like 
+```
+building-1 -> building
+floor-3 -> floor
+sensor-2 -> sensor
+```
+
+This approach limits the naming for the topic entities, it needs to follow pattern to be correctly handled.
+
+##### Level mapping
+In this approach, nothing needs to be pre-specified by the user as config
+
+for a topic name like 
+```
+building-1/floor-3/sensor-2
+```
+can be mapped with labels like 
+```
+building-1 -> L0
+floor-3 -> L1
+sensor-2 -> L2
+```
+
+But the query less readable, as labels like (`L0` - `L1` -,) will be used inside the query.
+
+## 2) Data Format
+
+## 3) MQTT v5 vs v3.1.1
 
 
 ## 2) References
