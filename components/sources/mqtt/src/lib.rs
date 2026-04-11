@@ -1,13 +1,13 @@
 mod adaptive_batcher;
 pub mod config;
 pub mod connection;
-pub mod model;
+pub mod schema;
 mod time;
 
 use adaptive_batcher::AdaptiveBatchConfig;
 use config::{
     default_broker_addr, default_event_channel_capacity, default_port, default_qos,
-    MQTTSourceConfig, MqttConnectProperties, MqttSubscribeProperties, MqttTopicConfig,
+    MqttSourceConfig, MqttConnectProperties, MqttSubscribeProperties, MqttTopicConfig,
     MqttTransportMode, TopicMapping,
 };
 use drasi_core::evaluation::functions::async_trait;
@@ -31,10 +31,13 @@ use drasi_lib::SourceRuntimeContext;
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, Packet, QoS};
 use tracing::Instrument;
 mod mqtt;
+mod processor;
+mod pattern;
+mod utils;
 
 pub use config::MqttQoS;
 pub use mqtt::MQTTSource;
-
+pub use schema::{MqttElement, MqttSourceChange};
 /// TODO: Complete the mqtt builder
 
 /// Builder for MQTTSource instances.
@@ -63,7 +66,6 @@ pub struct MQTTSourceBuilder {
     port: u16,
     topics: Vec<MqttTopicConfig>,
     topic_mappings: Vec<TopicMapping>,
-    qos: MqttQoS,
     event_channel_capacity: usize,
     transport: Option<MqttTransportMode>,
     request_channel_capacity: Option<usize>,
@@ -102,7 +104,6 @@ impl MQTTSourceBuilder {
                 qos: qos.clone(),
             }],
             topic_mappings: Vec::new(),
-            qos,
             event_channel_capacity: default_event_channel_capacity(),
             transport: None,
             request_channel_capacity: None,
@@ -142,7 +143,7 @@ impl MQTTSourceBuilder {
     pub fn with_topic(mut self, topic: impl Into<String>) -> Self {
         self.topics = vec![MqttTopicConfig {
             topic: topic.into(),
-            qos: self.qos.clone(),
+            qos: default_qos(),
         }];
         self
     }
@@ -157,14 +158,6 @@ impl MQTTSourceBuilder {
 
     pub fn with_topics(mut self, topics: Vec<MqttTopicConfig>) -> Self {
         self.topics = topics;
-        self
-    }
-
-    pub fn with_qos(mut self, qos: MqttQoS) -> Self {
-        self.qos = qos.clone();
-        for topic in &mut self.topics {
-            topic.qos = qos.clone();
-        }
         self
     }
 
@@ -292,14 +285,13 @@ impl MQTTSourceBuilder {
         self
     }
 
-    pub fn with_config(mut self, config: MQTTSourceConfig) -> Self {
+    pub fn with_config(mut self, config: MqttSourceConfig) -> Self {
         self.broker_addr = config.broker_addr;
         self.port = config.port;
         self.identity_provider = config.identity_provider;
         self.topics = config.topics;
         self.topic_mappings = config.topic_mappings;
         self.event_channel_capacity = config.event_channel_capacity;
-        self.qos = config.qos;
         self.transport = config.transport;
         self.request_channel_capacity = config.request_channel_capacity;
         self.max_inflight = config.max_inflight;
@@ -320,14 +312,13 @@ impl MQTTSourceBuilder {
     }
 
     pub fn build(self) -> Result<MQTTSource> {
-        let config = MQTTSourceConfig {
+        let config = MqttSourceConfig {
             broker_addr: self.broker_addr,
             port: self.port,
             identity_provider: self.identity_provider,
             topics: self.topics,
             topic_mappings: self.topic_mappings,
             event_channel_capacity: self.event_channel_capacity,
-            qos: self.qos,
             transport: self.transport,
             request_channel_capacity: self.request_channel_capacity,
             max_inflight: self.max_inflight,
@@ -358,6 +349,7 @@ impl MQTTSourceBuilder {
         }
 
         let mut adaptive_config = AdaptiveBatchConfig::default();
+        
         if let Some(max_batch) = config.adaptive_max_batch_size {
             adaptive_config.max_batch_size = max_batch;
         }
@@ -440,7 +432,7 @@ mod tests {
 
         #[test]
         fn test_with_dispatch_creates_source() {
-            let config = MQTTSourceConfig {
+            let config = MqttSourceConfig {
                 broker_addr: "localhost".to_string(),
                 port: 8080,
                 identity_provider: None,
@@ -450,7 +442,6 @@ mod tests {
                 }],
                 topic_mappings: Vec::new(),
                 event_channel_capacity: 100,
-                qos: MqttQoS::TWO,
                 transport: None,
                 request_channel_capacity: None,
                 max_inflight: None,
@@ -621,8 +612,8 @@ mod tests {
     }
 
     mod event_conversion {
-        use crate::model::convert_mqtt_to_source_change;
-        use crate::model::{MQTTElement, MqttSourceChange};
+        use crate::schema::convert_mqtt_to_source_change_event;
+        use crate::schema::{MqttElement, MqttSourceChange};
 
         use super::*;
 
@@ -636,7 +627,7 @@ mod tests {
             props.insert("age".to_string(), serde_json::Value::Number(30.into()));
 
             let mqtt_change = MqttSourceChange::Insert {
-                element: MQTTElement::Node {
+                element: MqttElement::Node {
                     id: "user-1".to_string(),
                     labels: vec!["User".to_string()],
                     properties: props,
@@ -644,7 +635,7 @@ mod tests {
                 timestamp: Some(1234567890000000000),
             };
 
-            let result = convert_mqtt_to_source_change(&mqtt_change, "test-source");
+            let result = convert_mqtt_to_source_change_event(&mqtt_change, "test-source");
             assert!(result.is_ok());
 
             match result.unwrap() {
@@ -668,7 +659,7 @@ mod tests {
         #[test]
         fn test_convert_relation_insert() {
             let mqtt_change = MqttSourceChange::Insert {
-                element: MQTTElement::Relation {
+                element: MqttElement::Relation {
                     id: "follows-1".to_string(),
                     labels: vec!["FOLLOWS".to_string()],
                     from: "user-1".to_string(),
@@ -678,7 +669,7 @@ mod tests {
                 timestamp: None,
             };
 
-            let result = convert_mqtt_to_source_change(&mqtt_change, "test-source");
+            let result = convert_mqtt_to_source_change_event(&mqtt_change, "test-source");
             assert!(result.is_ok());
 
             match result.unwrap() {
@@ -707,7 +698,7 @@ mod tests {
                 timestamp: Some(9999999999),
             };
 
-            let result = convert_mqtt_to_source_change(&mqtt_change, "test-source");
+            let result = convert_mqtt_to_source_change_event(&mqtt_change, "test-source");
             assert!(result.is_ok());
 
             match result.unwrap() {
@@ -722,7 +713,7 @@ mod tests {
         #[test]
         fn test_convert_update() {
             let mqtt_change = MqttSourceChange::Update {
-                element: MQTTElement::Node {
+                element: MqttElement::Node {
                     id: "user-1".to_string(),
                     labels: vec!["User".to_string()],
                     properties: serde_json::Map::new(),
@@ -730,7 +721,7 @@ mod tests {
                 timestamp: None,
             };
 
-            let result = convert_mqtt_to_source_change(&mqtt_change, "test-source");
+            let result = convert_mqtt_to_source_change_event(&mqtt_change, "test-source");
             assert!(result.is_ok());
 
             match result.unwrap() {

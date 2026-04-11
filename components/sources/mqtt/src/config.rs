@@ -21,6 +21,8 @@ use rumqttc::v5::MqttOptions as MqttOptionsV5;
 use rumqttc::{MqttOptions, QoS};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
+use serde_repr::{Serialize_repr, Deserialize_repr};
 
 pub fn default_broker_addr() -> String {
     "localhost".to_string()
@@ -38,11 +40,12 @@ pub fn default_event_channel_capacity() -> usize {
     20
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Eq)]
+#[derive(Debug, Clone, PartialEq, Serialize_repr, Deserialize_repr, Eq)]
+#[repr(u8)]
 pub enum MqttQoS {
-    ZERO,
-    ONE,
-    TWO,
+    ZERO = 0,
+    ONE = 1,
+    TWO = 2,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -67,16 +70,27 @@ pub enum MqttTransportMode {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub struct MappingEntity {
     pub label: String,
     pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum MappingMode {
+    PayloadAsField,
+    PayloadSpread,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub struct MappingProperties {
-    pub mode: String,
+    pub mode: MappingMode,
     pub field_name: Option<String>,
-    pub inject: Option<String>,
+    /// JSON object mapping topic variables to graph properties
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inject: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -158,7 +172,7 @@ pub struct MqttSubscribeProperties {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct MQTTSourceConfig {
+pub struct MqttSourceConfig {
     //...... Main config, mqtt-wide config parameters
     /// MQTT broker host address
     #[serde(default = "default_broker_addr")]
@@ -183,10 +197,6 @@ pub struct MQTTSourceConfig {
     /// Capacity of the async channel
     #[serde(default = "default_event_channel_capacity")] // for client creation and event loop
     pub event_channel_capacity: usize,
-
-    /// Quality of Service level for MQTT messages // for subscribe
-    #[serde(default = "default_qos")]
-    pub qos: MqttQoS,
 
     //...... Shared config parameters (used by both v3 and v5 clients)
     /// MQTT transport protocol (e.g., "tcp", "tls")

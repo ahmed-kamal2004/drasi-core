@@ -1,8 +1,10 @@
 use core::panic;
+use std::os::unix::process;
 use std::{option, time::Duration};
 
 use crate::config::{MqttQoS, MqttTransportMode};
-use crate::{config::MQTTSourceConfig, mqtt};
+use crate::{config::MqttSourceConfig, mqtt};
+use drasi_core::evaluation::functions::async_trait;
 use rumqttc::v5::{
     AsyncClient as AsyncClientV5, EventLoop as EventLoopV5, MqttOptions as MqttOptionsV5,
 };
@@ -13,6 +15,97 @@ use rumqttc::{
 use tracing::event;
 
 use log::{debug, error, info, trace, warn};
+use crate::utils::MqttPacket;
+
+macro_rules! run_event_loop {
+    ($event_loop:expr, $shutdown_rx:expr, $processer_tx:expr) => {
+        loop {
+            tokio::select! {
+                _ = &mut $shutdown_rx => {
+                    info!("Shutdown signal received, stopping MQTT event loop");
+                    break;
+                },
+                event = $event_loop.poll() => {
+                    match event {
+                        Ok(event) =>{
+                            let packet = event.to_mqtt_packet();
+                            if let Some(packet) = packet {
+                                info!("Received MQTT packet - Topic: {}, Payload: {:?}, Timestamp: {}", packet.topic, packet.payload, packet.timestamp);
+                                if let Err(e) = $processer_tx.send(packet).await {
+                                        error!("Failed to send MQTT packet to processor: {:?}", e);
+                                }
+                            }
+                        },
+                        Err(e) => error!("MQTT event loop error: {:?}", e),
+                    }
+                }
+            }
+        }
+    };
+}
+
+macro_rules! common_config_to_mqtt_options {
+    ($options:expr, $config:expr) => {
+        if let Some(tranport) = $config.transport.as_ref() {
+            match tranport {
+                crate::config::MqttTransportMode::TLS {
+                    ca,
+                    alpn,
+                    client_auth,
+                } => {
+                    let tls_config = rumqttc::TlsConfiguration::Simple {
+                        ca: ca.clone(),
+                        alpn: alpn.clone(),
+                        client_auth: client_auth.clone(),
+                    };
+                    $options.set_transport(rumqttc::Transport::Tls(tls_config));
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(request_channel_capacity) = $config.request_channel_capacity {
+            $options.set_request_channel_capacity(request_channel_capacity);
+        }
+
+        if let Some(keep_alive) = $config.keep_alive {
+            $options.set_keep_alive(Duration::from_secs(keep_alive));
+        }
+    };
+}
+
+
+trait ToMqttPacket {
+    fn to_mqtt_packet(self) -> Option<MqttPacket>;
+}
+
+impl ToMqttPacket for rumqttc::Event {
+    fn to_mqtt_packet(self) -> Option<MqttPacket> {
+        if let rumqttc::Event::Incoming(rumqttc::Packet::Publish(p)) = self {
+            Some(MqttPacket {
+                topic: p.topic,
+                payload: p.payload,
+                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl ToMqttPacket for rumqttc::v5::Event {
+    fn to_mqtt_packet(self) -> Option<MqttPacket> {
+        if let rumqttc::v5::Event::Incoming(rumqttc::v5::mqttbytes::v5::Packet::Publish(p)) = self {
+            Some(MqttPacket {
+                topic: str::from_utf8(&p.topic).unwrap_or_default().to_string(),
+                payload: p.payload,
+                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            })
+        } else {
+            None
+        }
+    }
+}
 
 pub enum MqttAsyncClientWrapper {
     AsyncClientV3(AsyncClient),
@@ -23,6 +116,12 @@ enum MqttEventLoopWrapper {
     EventLoopV3 { event_loop: EventLoop },
     EventLoopV5 { event_loop: EventLoopV5 },
 }
+
+#[async_trait]
+trait MqttEventLoop {
+    async fn poll(&mut self) -> anyhow::Result<rumqttc::Event>;
+}
+
 pub(crate) struct MqttConnection {
     client: MqttAsyncClientWrapper,
     event_loop_handle: Option<tokio::task::JoinHandle<()>>,
@@ -33,8 +132,9 @@ impl MqttConnection {
 
     pub async fn new(
         id: impl Into<String>,
-        config: &MQTTSourceConfig,
-        mut shutdown_rx: tokio::sync::broadcast::Receiver<()>, // to handle multiple topics in future. TODO
+        config: &MqttSourceConfig,
+        mut shutdown_rx: tokio::sync::oneshot::Receiver<()>, 
+        mut processer_tx: tokio::sync::mpsc::Sender<MqttPacket>,
     ) -> anyhow::Result<Self> {
         let id_v5 = id.into().clone();
         let id_v3 = id_v5.clone();
@@ -42,66 +142,70 @@ impl MqttConnection {
         let options_v5 = Self::config_to_mqtt_options_v5(id_v5, config);
         let (client_v5, mut event_loop_v5) =
             AsyncClientV5::new(options_v5, config.event_channel_capacity);
-        match event_loop_v5.poll().await {
-            Ok(event) => {
-                info!("Successfully connected to MQTT broker using v5 options");
-                let mut connection = Self {
-                    client: MqttAsyncClientWrapper::AsyncClientV5(client_v5),
-                    event_loop_handle: None,
-                };
-                connection
-                    .run_subscription_loop(
-                        shutdown_rx,
-                        MqttEventLoopWrapper::EventLoopV5 {
-                            event_loop: event_loop_v5,
-                        },
-                        config,
-                    )
-                    .await;
-                return Ok(connection);
-            }
-            Err(ConnectionError::ConnectionRefused(
-                ConnectReturnCode::UnsupportedProtocolVersion,
-            )) => {
-                error!("Failed to connect using MQTT v5 options: Unsupported protocol version. Attempting MQTT v3 fallback...");
-            }
-            Err(e) => {
-                error!(
-                    "Failed to connect using MQTT v5 options: {:?}. Attempting MQTT v3 fallback...",
-                    e
-                );
-            }
-        };
+        for trial in 0..3 {
+            match event_loop_v5.poll().await {
+                Ok(event) => {
+                    info!("Successfully connected to MQTT broker using v5 options");
+                    let mut connection = Self {
+                        client: MqttAsyncClientWrapper::AsyncClientV5(client_v5),
+                        event_loop_handle: None,
+                    };
+                    connection
+                        .run_subscription_loop(
+                            shutdown_rx,
+                            MqttEventLoopWrapper::EventLoopV5 {
+                                event_loop: event_loop_v5,
+                            },
+                            config,
+                            processer_tx,
+                        )
+                        .await;
+                    return Ok(connection);
+                }
+                Err(ConnectionError::ConnectionRefused(
+                    ConnectReturnCode::UnsupportedProtocolVersion,
+                )) => {
+                    error!("Failed to connect using MQTT v5 options: Unsupported protocol version. Attempting MQTT v3 fallback...");
+                    break;
+                }
+                Err(e) => {
+                    error!("Failed to connect using MQTT v5 options on trial {}: {:?}", trial + 1, e);
+                }
+            };
+        }
 
-        // fallback to Mqtt v3
+
+        // fallback to Mqtt v3.1.1
         let options_v3 = Self::config_to_mqtt_options_v3(id_v3, config);
         let (client_v3, mut event_loop_v3) =
             AsyncClient::new(options_v3, config.event_channel_capacity);
-        match event_loop_v3.poll().await {
-            Ok(event) => {
-                info!("Successfully connected to MQTT broker using v3 options");
-                let mut connection = Self {
-                    client: MqttAsyncClientWrapper::AsyncClientV3(client_v3),
-                    event_loop_handle: None,
-                };
-                connection
-                    .run_subscription_loop(
-                        shutdown_rx,
-                        MqttEventLoopWrapper::EventLoopV3 {
-                            event_loop: event_loop_v3,
-                        },
-                        config,
-                    )
-                    .await;
-                return Ok(connection);
-            }
-            Err(e) => {
-                error!(
-                    "Failed to connect using MQTT v3 options: {:?}. No more fallbacks available.",
-                    e
-                );
-            }
-        };
+
+        for trial in 0..3 {
+            match event_loop_v3.poll().await {
+                Ok(event) => {
+                    info!("Successfully connected to MQTT broker using v3 options");
+                    let mut connection = Self {
+                        client: MqttAsyncClientWrapper::AsyncClientV3(client_v3),
+                        event_loop_handle: None,
+                    };
+                    connection
+                        .run_subscription_loop(
+                            shutdown_rx,
+                            MqttEventLoopWrapper::EventLoopV3 {
+                                event_loop: event_loop_v3,
+                            },
+                            config,
+                            processer_tx,
+                        )
+                        .await;
+                    return Ok(connection);
+                }
+                Err(e) => {
+                    error!("Failed to connect using MQTT v3 options on trial {}: {:?}", trial + 1, e);
+                }
+            };
+
+        }
 
         Err(anyhow::anyhow!("Failed to create MQTT client with both v5 and v3 options. Check configuration for errors."))
     }
@@ -110,9 +214,10 @@ impl MqttConnection {
 
     async fn run_subscription_loop(
         &mut self,
-        mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+        mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
         mut event_loop: MqttEventLoopWrapper,
-        config: &MQTTSourceConfig,
+        config: &MqttSourceConfig,
+        mut processer_tx: tokio::sync::mpsc::Sender<MqttPacket>,
     ) {
         self.subscribe_to_topics(config).await.unwrap_or_else(|e| {
             error!("Failed to subscribe to topics: {:?}", e);
@@ -133,24 +238,7 @@ impl MqttConnection {
                         return;
                     }
                 };
-                loop {
-                    tokio::select! {
-                        _ = shutdown_rx.recv() => {
-                            info!("Shutdown signal received, stopping MQTT event loop");
-                            break;
-                        },
-                        event = event_loop_v5.poll() => {
-                            match event {
-                                Ok(event) => {
-                                    info!("MQTT v5 event: {:?}", event);
-                                },
-                                Err(e) => {
-                                    error!("MQTT v5 event loop error: {:?}", e);
-                                }
-                            }
-                        }
-                    }
-                }
+                run_event_loop!(event_loop_v5, shutdown_rx, processer_tx);
             } else {
                 let mut event_loop_v3 = match event_loop {
                     MqttEventLoopWrapper::EventLoopV3 { event_loop } => event_loop,
@@ -159,29 +247,12 @@ impl MqttConnection {
                         return;
                     }
                 };
-                loop {
-                    tokio::select! {
-                        _ = shutdown_rx.recv() => {
-                            info!("Shutdown signal received, stopping MQTT event loop");
-                            break;
-                        },
-                        event = event_loop_v3.poll() => {
-                            match event {
-                                Ok(event) => {
-                                    info!("MQTT v3 event: {:?}", event);
-                                },
-                                Err(e) => {
-                                    error!("MQTT v3 event loop error: {:?}", e);
-                                }
-                            }
-                        }
-                    }
-                }
+                run_event_loop!(event_loop_v3, shutdown_rx, processer_tx);
             }
         }))
     }
 
-    async fn subscribe_to_topics(&mut self, config: &MQTTSourceConfig) -> anyhow::Result<()> {
+    async fn subscribe_to_topics(&mut self, config: &MqttSourceConfig) -> anyhow::Result<()> {
         for topic_config in &config.topics {
             let topic = topic_config.topic.clone();
             match &mut self.client {
@@ -220,41 +291,17 @@ impl MqttConnection {
 
     fn config_to_mqtt_options_v5(
         id: impl Into<String>,
-        config: &MQTTSourceConfig,
+        config: &MqttSourceConfig,
     ) -> MqttOptionsV5 {
         let mut options = MqttOptionsV5::new(id, config.broker_addr.clone(), config.port);
 
         // Common between v5 and v3.1.1
-        if let Some(tranport) = config.transport.as_ref() {
-            match tranport {
-                crate::config::MqttTransportMode::TLS {
-                    ca,
-                    alpn,
-                    client_auth,
-                } => {
-                    let tls_config = rumqttc::TlsConfiguration::Simple {
-                        ca: ca.clone(),
-                        alpn: alpn.clone(),
-                        client_auth: client_auth.clone(),
-                    };
-                    options.set_transport(rumqttc::Transport::Tls(tls_config));
-                }
-                _ => {}
-            }
-        }
+        common_config_to_mqtt_options!(options, config);
 
-        if let Some(request_channel_capacity) = config.request_channel_capacity {
-            options.set_request_channel_capacity(request_channel_capacity);
-        }
 
         if let Some(max_inflight) = config.max_inflight {
             options.set_outgoing_inflight_upper_limit(max_inflight);
         }
-
-        if let Some(keep_alive) = config.keep_alive {
-            options.set_keep_alive(Duration::from_secs(keep_alive));
-        }
-
         if let Some(clean_start) = config.clean_start {
             options.set_clean_start(clean_start);
         }
@@ -271,40 +318,15 @@ impl MqttConnection {
         options
     }
 
-    fn config_to_mqtt_options_v3(id: impl Into<String>, config: &MQTTSourceConfig) -> MqttOptions {
+    fn config_to_mqtt_options_v3(id: impl Into<String>, config: &MqttSourceConfig) -> MqttOptions {
         let mut options = MqttOptions::new(id, config.broker_addr.clone(), config.port);
 
         // Common between v5 and v3.1.1
-        if let Some(tranport) = config.transport.as_ref() {
-            match tranport {
-                crate::config::MqttTransportMode::TLS {
-                    ca,
-                    alpn,
-                    client_auth,
-                } => {
-                    let tls_config = rumqttc::TlsConfiguration::Simple {
-                        ca: ca.clone(),
-                        alpn: alpn.clone(),
-                        client_auth: client_auth.clone(),
-                    };
-                    options.set_transport(rumqttc::Transport::Tls(tls_config));
-                }
-                _ => {}
-            }
-        }
-
-        if let Some(request_channel_capacity) = config.request_channel_capacity {
-            options.set_request_channel_capacity(request_channel_capacity);
-        }
+        common_config_to_mqtt_options!(options, config);
 
         if let Some(max_inflight) = config.max_inflight {
             options.set_inflight(max_inflight);
         }
-
-        if let Some(keep_alive) = config.keep_alive {
-            options.set_keep_alive(Duration::from_secs(keep_alive));
-        }
-
         if let Some(clean_start) = config.clean_start {
             options.set_clean_session(clean_start);
         }

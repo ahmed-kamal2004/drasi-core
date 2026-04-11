@@ -1,14 +1,17 @@
 use crate::adaptive_batcher::{AdaptiveBatchConfig, AdaptiveBatcher};
-use crate::config::MQTTSourceConfig;
+use crate::config::MqttSourceConfig;
 use crate::connection::MqttConnection;
-use crate::model::MqttSourceChange;
+use crate::schema::MqttSourceChange;
 use drasi_core::evaluation::functions::async_trait;
+use drasi_core::models::SourceChange;
 use drasi_lib::config::SourceSubscriptionSettings;
 use drasi_lib::queries::base;
 use drasi_lib::sources::base::{SourceBase, SourceBaseParams};
 use drasi_lib::ComponentStatus;
 use drasi_lib::Source;
 use std::collections::HashMap;
+use std::os::unix::process;
+use crate::processor::MqttProcessor;
 
 use anyhow::Result;
 use log::{debug, error, info, trace, warn};
@@ -37,7 +40,7 @@ pub struct MQTTSource {
     /// Base source implementation providing common functionality
     base: SourceBase,
     /// MQTT source configuration
-    config: MQTTSourceConfig,
+    config: MqttSourceConfig,
     /// Adaptive batching configuration for throughput optimization
     adaptive_config: AdaptiveBatchConfig,
 }
@@ -54,9 +57,9 @@ pub struct BatchEventRequest {
 #[derive(Clone)]
 pub struct MqttAppState {
     /// The source ID for validation against incoming requests
-    source_id: String,
+    pub source_id: String,
     /// Channel for sending events to the adaptive batcher
-    batch_tx: mpsc::Sender<SourceChangeEvent>,
+    pub batch_tx: mpsc::Sender<SourceChangeEvent>,
 }
 
 impl MQTTSource {
@@ -92,7 +95,7 @@ impl MQTTSource {
     ///
     /// let source = MQTTSource::new("my-mqtt-source", config)?;
     /// ```
-    pub fn new(id: impl Into<String>, config: MQTTSourceConfig) -> Result<Self> {
+    pub fn new(id: impl Into<String>, config: MqttSourceConfig) -> Result<Self> {
         let id = id.into();
         let params = SourceBaseParams::new(id);
 
@@ -145,7 +148,7 @@ impl MQTTSource {
     /// Returns an error if the base source cannot be initialized.
     pub fn with_dispatch(
         id: impl Into<String>,
-        config: MQTTSourceConfig,
+        config: MqttSourceConfig,
         dispatch_mode: Option<DispatchMode>,
         dispatch_buffer_capacity: Option<usize>,
     ) -> Result<Self> {
@@ -189,7 +192,7 @@ impl MQTTSource {
 
     pub(crate) fn from_parts(
         base: SourceBase,
-        config: MQTTSourceConfig,
+        config: MqttSourceConfig,
         adaptive_config: AdaptiveBatchConfig,
     ) -> Self {
         Self {
@@ -199,7 +202,7 @@ impl MQTTSource {
         }
     }
 
-    pub fn config(&self) -> &MQTTSourceConfig {
+    pub fn config(&self) -> &MqttSourceConfig {
         &self.config
     }
 
@@ -207,114 +210,6 @@ impl MQTTSource {
         &self.adaptive_config
     }
 
-    async fn run_adaptive_batcher(
-        batch_rx: mpsc::Receiver<SourceChangeEvent>,
-        dispatchers: Arc<
-            tokio::sync::RwLock<
-                Vec<
-                    Box<
-                        dyn drasi_lib::channels::ChangeDispatcher<SourceEventWrapper> + Send + Sync,
-                    >,
-                >,
-            >,
-        >,
-        adaptive_config: AdaptiveBatchConfig,
-        source_id: String,
-    ) {
-        let mut batcher = AdaptiveBatcher::new(batch_rx, adaptive_config.clone());
-        println!("MAx wait time: {:?}", adaptive_config.max_wait_time);
-        let mut total_events = 0u64;
-        let mut total_batches = 0u64;
-
-        info!(
-            "[{}] MQTT Batcher with config: {:?}",
-            source_id, adaptive_config
-        );
-
-        while let Some(batch) = batcher.next_batch().await {
-            if batch.is_empty() {
-                debug!(
-                    "[{}] MQTT Batcher received empty batch, skipping",
-                    source_id
-                );
-                continue;
-            }
-
-            let batch_size = batch.len();
-
-            total_events += batch_size as u64;
-            total_batches += 1;
-
-            debug!(
-                "[{source_id}] MQTT Batcher forwarding batch #{total_batches} with {batch_size} events to dispatchers"
-            );
-
-            let mut sent_count = 0;
-            let mut failed_count = 0;
-
-            for (idx, event) in batch.into_iter().enumerate() {
-                debug!(
-                    "[{}] Batch #{}, dispatching event {}/{}",
-                    source_id,
-                    total_batches,
-                    idx + 1,
-                    batch_size
-                );
-
-                let mut profiling = drasi_lib::profiling::ProfilingMetadata::new();
-                profiling.source_send_ns = Some(drasi_lib::profiling::timestamp_ns());
-
-                let wrapper = SourceEventWrapper::with_profiling(
-                    event.source_id.clone(),
-                    SourceEvent::Change(event.change),
-                    event.timestamp,
-                    profiling,
-                );
-
-                if let Err(e) =
-                    SourceBase::dispatch_from_task(dispatchers.clone(), wrapper.clone(), &source_id)
-                        .await
-                {
-                    error!(
-                        "[{}] Batch #{}, failed to dispatch event {}/{} (no subscribers): {}",
-                        source_id,
-                        total_batches,
-                        idx + 1,
-                        batch_size,
-                        e
-                    );
-                    failed_count += 1;
-                } else {
-                    debug!(
-                        "[{}] Batch #{}, successfully dispatched event {}/{}",
-                        source_id,
-                        total_batches,
-                        idx + 1,
-                        batch_size
-                    );
-                    sent_count += 1;
-                }
-            }
-
-            debug!(
-                "[{source_id}] Batch #{total_batches} complete: {sent_count} dispatched, {failed_count} failed"
-            );
-
-            if total_batches.is_multiple_of(100) {
-                info!(
-                    "[{}] Adaptive MQTT metrics - Batches: {}, Events: {}, Avg batch size: {:.1}",
-                    source_id,
-                    total_batches,
-                    total_events,
-                    total_events as f64 / total_batches as f64
-                );
-            }
-        }
-
-        info!(
-            "[{source_id}] Adaptive MQTT batcher stopped - Total batches: {total_batches}, Total events: {total_events}"
-        );
-    }
 }
 
 #[async_trait]
@@ -346,10 +241,6 @@ impl Source for MQTTSource {
             serde_json::Value::Number(self.config.port.into()),
         );
         props.insert("topics".to_string(), serde_json::Value::Array(topics));
-        props.insert(
-            "qos".to_string(),
-            serde_json::Value::String(format!("{:?}", self.config.qos)),
-        );
 
         props
     }
@@ -358,9 +249,13 @@ impl Source for MQTTSource {
         self.base.get_auto_start()
     }
 
+
+
+
     async fn start(&self) -> Result<()> {
         info!("[{}] Starting MQTT source", self.id());
 
+        // set the source status
         self.base.set_status(ComponentStatus::Starting).await;
         self.base
             .send_component_event(
@@ -368,6 +263,8 @@ impl Source for MQTTSource {
                 Some("Starting MQTT Source".to_string()),
             )
             .await?;
+
+
 
         let source_id = self.base.id.clone();
         let instance_id = self
@@ -377,26 +274,47 @@ impl Source for MQTTSource {
             .map(|c| c.instance_id)
             .unwrap_or_default();
 
+
         // Start the subscriber
         let (error_tx, error_rx) = tokio::sync::oneshot::channel();
-        let source_id_for_span = source_id.clone();
+
         let span = tracing::info_span!(
             "mqtt_source_server",
             instance_id = %instance_id,
-            component_id = %source_id_for_span,
+            component_id = %source_id.clone(),
             component_type = "source"
         );
+
         let config = self.config.clone();
         let source_id_for_task = self.id().to_string();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
+        let (processer_tx, processor_rx) = mpsc::channel(100);
+
+        // create batch channel.
+        let batch_channel_capacity = self.adaptive_config.recommended_channel_capacity();
+        let (batch_tx, batch_rx) = mpsc::channel::<SourceChangeEvent>(batch_channel_capacity);
+
+
+        // start processor task
+        let mut processor = MqttProcessor::new(source_id.clone(), &config);
+        processor.start_processing_loop(source_id.clone(), processor_rx, batch_tx);
+
+
+        // start adaptive batcher task
+        let dispatchers = self.base.dispatchers.clone();
+        let adaptive_config = self.adaptive_config.clone();
+        let batcher_source_id = source_id.clone();
+        processor.start_adaptive_batcher_loop(batcher_source_id, batch_rx, dispatchers, adaptive_config);
+
+        // start mqtt connection task
         let server_handle = tokio::spawn(
             async move {
                 let (connection_shutdown_tx, connection_shutdown_rx) =
-                    tokio::sync::broadcast::channel(1);
+                    tokio::sync::oneshot::channel();
 
                 if let Err(error) =
-                    MqttConnection::new(source_id_for_task, &config, connection_shutdown_rx).await
+                    MqttConnection::new(source_id_for_task, &config, connection_shutdown_rx, processer_tx).await
                 {
                     let _ = error_tx.send(error.to_string());
                     return;
@@ -421,15 +339,17 @@ impl Source for MQTTSource {
             }
         }
 
+        // end, set status to running.
         self.base
             .send_component_event(
                 ComponentStatus::Running,
-                Some(format!("MQTT source running with batch support")),
+                Some(format!("MQTT source running on {}:{}", self.config.broker_addr, self.config.port)),
             )
             .await?;
 
         Ok(())
     }
+
 
     async fn stop(&self) -> Result<()> {
         info!("[{}] Stopping MQTT source", self.base.id);

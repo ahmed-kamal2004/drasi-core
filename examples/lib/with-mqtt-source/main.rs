@@ -1,9 +1,10 @@
 use anyhow::Result;
-use drasi_reaction_log::{QueryConfig, TemplateSpec};
+use drasi_lib::DrasiLib;
 use drasi_lib::Query;
 use drasi_reaction_log::LogReaction;
-use drasi_lib::DrasiLib;
-use drasi_source_mqtt::{MqttQoS, MQTTSource};
+use drasi_reaction_log::{QueryConfig, TemplateSpec};
+use drasi_source_mqtt::config::MqttSourceConfig;
+use drasi_source_mqtt::MQTTSource;
 use std::sync::Arc;
 
 use axum::{
@@ -14,64 +15,87 @@ use axum::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    ).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     println!("╔════════════════════════════════════════════╗");
     println!("║     DrasiLib Temperature Monitor Example   ║");
     println!("╚════════════════════════════════════════════╝\n");
 
-
     // TODO: Add bootstrapper
 
+    let source_config_yaml = r#"
+broker_addr: "localhost"
+port: 9001
+topics:
+  - topic: "sensors/temperature"
+    qos: 1
+  - topic: "building/+/+/+"
+    qos: 0
+topic_mappings:
+  - pattern: "sensors/{type}"
+    entity:
+      label: "readings"
+      id: "symbol"
+    properties:
+      mode: payload_as_field
+      field_name: "val"
+      inject:
+        type: "{type}"
+  - pattern: "building/{floor}/{room}/{device}"
+    entity:
+      label: "welcome"
+      id: "{room}:{device}"
+    properties:
+      mode: payload_as_field
+      field_name: "{message}"
+      inject:
+        type: "{welcome}"
+event_channel_capacity: 20
+adaptive_enabled: false
+"#;
 
-    // Create MQTT source
+    // adaptive_max_batch_size: 3
+    // adaptive_min_batch_size: 1
+    // adaptive_max_wait_ms: 1000
+    let source_config: MqttSourceConfig = serde_yaml::from_str(source_config_yaml)?;
 
     let mqtt_source = MQTTSource::builder("mqtt-source")
-        .with_host("localhost")
-        .with_port(9001)
-        .with_topic("sensors/temperature")
-        .with_qos(MqttQoS::ONE)
-        .with_adaptive_max_batch_size(3)
-        .with_adaptive_min_batch_size(1)
-        .with_adaptive_max_wait_ms(1000)
+        .with_config(source_config)
         .build()?;
 
     let all_readings_query = Query::cypher("all-readings")
-        .query(r#"
+        .query(
+            r#"
             MATCH (rd:readings)
             RETURN rd.symbol AS symbol,
                    rd.val AS val
-        "#)
+        "#,
+        )
         .from_source("mqtt-source")
         .auto_start(true)
         .enable_bootstrap(true)
         .build();
 
-    
-    
     let default_template = QueryConfig {
-         added: Some(TemplateSpec{
-             template: "[{{query_name}}] + {{after.symbol}}: ${{after.val}}".to_string(),
-             ..Default::default()
-         }),
-         updated: Some(TemplateSpec{
-             template: "[{{query_name}}] ~ {{after.symbol}}: ${{before.val}} -> ${{after.val}}".to_string(),
-             ..Default::default()
-         }),
-         deleted: Some(TemplateSpec{
-             template: "[{{query_name}}] - {{before.symbol}} removed".to_string(),
+        added: Some(TemplateSpec {
+            template: "[{{query_name}}] + {{after.symbol}}: ${{after.val}}".to_string(),
             ..Default::default()
-         }),
-     };
+        }),
+        updated: Some(TemplateSpec {
+            template: "[{{query_name}}] ~ {{after.symbol}}: ${{before.val}} -> ${{after.val}}"
+                .to_string(),
+            ..Default::default()
+        }),
+        deleted: Some(TemplateSpec {
+            template: "[{{query_name}}] - {{before.symbol}} removed".to_string(),
+            ..Default::default()
+        }),
+    };
 
     let log_reaction = LogReaction::builder("console-logger")
         .from_query("all-readings")
         .with_default_template(default_template)
         .build()?;
-
 
     let core = Arc::new(
         DrasiLib::builder()
@@ -80,7 +104,7 @@ async fn main() -> Result<()> {
             .with_query(all_readings_query)
             .with_reaction(log_reaction)
             .build()
-            .await?
+            .await?,
     );
 
     println!("\n>>> Starting DrasiLib core...");

@@ -13,14 +13,14 @@ pub enum MqttSourceChange {
     /// Insert a new element
     #[serde(rename = "insert")]
     Insert {
-        element: MQTTElement,
+        element: MqttElement,
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp: Option<u64>,
     },
     /// Update an existing element
     #[serde(rename = "update")]
     Update {
-        element: MQTTElement,
+        element: MqttElement,
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp: Option<u64>,
     },
@@ -38,7 +38,7 @@ pub enum MqttSourceChange {
 /// Element that can be either a Node or Relation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum MQTTElement {
+pub enum MqttElement {
     #[serde(rename = "node")]
     Node {
         id: String,
@@ -62,7 +62,7 @@ pub fn map_json_to_mqtt_source_change(json_str: &str) -> Result<MqttSourceChange
     Ok(change)
 }
 
-pub fn convert_mqtt_to_source_change(
+pub fn convert_mqtt_to_source_change_event(
     mqtt_change: &MqttSourceChange,
     source_id: &str,
 ) -> Result<drasi_core::models::SourceChange> {
@@ -123,14 +123,14 @@ pub fn convert_mqtt_to_source_change(
 }
 
 fn create_element_from_mqtt(
-    mqtt_element: &MQTTElement,
+    mqtt_element: &MqttElement,
     source_id: &str,
     timestamp: u64,
 ) -> Result<drasi_core::models::Element> {
     use drasi_core::models::{Element, ElementMetadata, ElementPropertyMap, ElementReference};
 
     match mqtt_element {
-        MQTTElement::Node {
+        MqttElement::Node {
             id,
             labels,
             properties,
@@ -157,7 +157,7 @@ fn create_element_from_mqtt(
                 properties: prop_map,
             })
         }
-        MQTTElement::Relation {
+        MqttElement::Relation {
             id,
             labels,
             from,
