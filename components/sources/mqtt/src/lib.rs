@@ -7,7 +7,7 @@ mod time;
 use adaptive_batcher::AdaptiveBatchConfig;
 use config::{
     default_broker_addr, default_event_channel_capacity, default_port, default_qos,
-    MqttSourceConfig, MqttConnectProperties, MqttSubscribeProperties, MqttTopicConfig,
+    MqttConnectProperties, MqttSourceConfig, MqttSubscribeProperties, MqttTopicConfig,
     MqttTransportMode, TopicMapping,
 };
 use drasi_core::evaluation::functions::async_trait;
@@ -31,8 +31,8 @@ use drasi_lib::SourceRuntimeContext;
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, Packet, QoS};
 use tracing::Instrument;
 mod mqtt;
-mod processor;
 mod pattern;
+mod processor;
 mod utils;
 
 pub use config::MqttQoS;
@@ -349,7 +349,7 @@ impl MQTTSourceBuilder {
         }
 
         let mut adaptive_config = AdaptiveBatchConfig::default();
-        
+
         if let Some(max_batch) = config.adaptive_max_batch_size {
             adaptive_config.max_batch_size = max_batch;
         }
@@ -612,7 +612,7 @@ mod tests {
     }
 
     mod event_conversion {
-        use crate::schema::convert_mqtt_to_source_change_event;
+        use crate::schema::convert_mqtt_to_source_change;
         use crate::schema::{MqttElement, MqttSourceChange};
 
         use super::*;
@@ -635,7 +635,7 @@ mod tests {
                 timestamp: Some(1234567890000000000),
             };
 
-            let result = convert_mqtt_to_source_change_event(&mqtt_change, "test-source");
+            let result = convert_mqtt_to_source_change(&mqtt_change, "test-source");
             assert!(result.is_ok());
 
             match result.unwrap() {
@@ -669,7 +669,7 @@ mod tests {
                 timestamp: None,
             };
 
-            let result = convert_mqtt_to_source_change_event(&mqtt_change, "test-source");
+            let result = convert_mqtt_to_source_change(&mqtt_change, "test-source");
             assert!(result.is_ok());
 
             match result.unwrap() {
@@ -698,7 +698,7 @@ mod tests {
                 timestamp: Some(9999999999),
             };
 
-            let result = convert_mqtt_to_source_change_event(&mqtt_change, "test-source");
+            let result = convert_mqtt_to_source_change(&mqtt_change, "test-source");
             assert!(result.is_ok());
 
             match result.unwrap() {
@@ -721,7 +721,7 @@ mod tests {
                 timestamp: None,
             };
 
-            let result = convert_mqtt_to_source_change_event(&mqtt_change, "test-source");
+            let result = convert_mqtt_to_source_change(&mqtt_change, "test-source");
             assert!(result.is_ok());
 
             match result.unwrap() {

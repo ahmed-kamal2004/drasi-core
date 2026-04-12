@@ -14,8 +14,8 @@ use rumqttc::{
 };
 use tracing::event;
 
-use log::{debug, error, info, trace, warn};
 use crate::utils::MqttPacket;
+use log::{debug, error, info, trace, warn};
 
 macro_rules! run_event_loop {
     ($event_loop:expr, $shutdown_rx:expr, $processer_tx:expr) => {
@@ -73,7 +73,6 @@ macro_rules! common_config_to_mqtt_options {
         }
     };
 }
-
 
 trait ToMqttPacket {
     fn to_mqtt_packet(self) -> Option<MqttPacket>;
@@ -133,7 +132,7 @@ impl MqttConnection {
     pub async fn new(
         id: impl Into<String>,
         config: &MqttSourceConfig,
-        mut shutdown_rx: tokio::sync::oneshot::Receiver<()>, 
+        mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
         mut processer_tx: tokio::sync::mpsc::Sender<MqttPacket>,
     ) -> anyhow::Result<Self> {
         let id_v5 = id.into().clone();
@@ -169,11 +168,14 @@ impl MqttConnection {
                     break;
                 }
                 Err(e) => {
-                    error!("Failed to connect using MQTT v5 options on trial {}: {:?}", trial + 1, e);
+                    error!(
+                        "Failed to connect using MQTT v5 options on trial {}: {:?}",
+                        trial + 1,
+                        e
+                    );
                 }
             };
         }
-
 
         // fallback to Mqtt v3.1.1
         let options_v3 = Self::config_to_mqtt_options_v3(id_v3, config);
@@ -201,10 +203,13 @@ impl MqttConnection {
                     return Ok(connection);
                 }
                 Err(e) => {
-                    error!("Failed to connect using MQTT v3 options on trial {}: {:?}", trial + 1, e);
+                    error!(
+                        "Failed to connect using MQTT v3 options on trial {}: {:?}",
+                        trial + 1,
+                        e
+                    );
                 }
             };
-
         }
 
         Err(anyhow::anyhow!("Failed to create MQTT client with both v5 and v3 options. Check configuration for errors."))
@@ -297,7 +302,6 @@ impl MqttConnection {
 
         // Common between v5 and v3.1.1
         common_config_to_mqtt_options!(options, config);
-
 
         if let Some(max_inflight) = config.max_inflight {
             options.set_outgoing_inflight_upper_limit(max_inflight);

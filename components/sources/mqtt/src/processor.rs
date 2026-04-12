@@ -1,26 +1,27 @@
+use crate::adaptive_batcher::{AdaptiveBatchConfig, AdaptiveBatcher};
+use crate::mqtt::MqttAppState;
+use crate::schema::{convert_mqtt_to_source_change, MqttSourceChange};
+use crate::utils::MqttPacket;
 use crate::{config::MqttSourceConfig, pattern::PatternMatcher};
-use std::{os::unix::process, sync::Arc};
 use drasi_core::evaluation::variable_value::de;
 use drasi_lib::channels::SourceChangeEvent;
-use log::{trace, error, debug, info};
-use tokio::task::JoinHandle;
+use drasi_lib::channels::{SourceEvent, SourceEventWrapper};
+use drasi_lib::{Source, SourceBase};
+use log::{debug, error, info, trace};
+use std::vec;
+use std::{os::unix::process, sync::Arc};
 use tokio::sync::mpsc;
-use crate::utils::MqttPacket;
-use crate::schema::{MqttSourceChange, convert_mqtt_to_source_change_event};
-use crate::mqtt::MqttAppState;
-use crate::adaptive_batcher::{AdaptiveBatcher, AdaptiveBatchConfig};
-use drasi_lib::channels::{SourceEventWrapper, SourceEvent};
-use drasi_lib::SourceBase;
+use tokio::task::JoinHandle;
 
 #[derive(Debug)]
 pub struct MqttProcessor {
     mapper: Arc<PatternMatcher>,
     processing_loop_handle: Option<JoinHandle<()>>,
+    adaptive_batcher_loop_handle: Option<JoinHandle<()>>,
     adaptive: bool,
 }
 
 impl MqttProcessor {
-
     //...... public methods
 
     pub fn new(source_id: impl Into<String>, config: &MqttSourceConfig) -> Self {
@@ -29,33 +30,59 @@ impl MqttProcessor {
         let mut processor = Self {
             mapper,
             processing_loop_handle: None,
+            adaptive_batcher_loop_handle: None,
             adaptive: config.adaptive_enabled.unwrap_or(false),
         };
 
         processor
     }
 
-    pub fn start_processing_loop(& mut self,source_id: String, mut rx: mpsc::Receiver<MqttPacket>, batch_tx: mpsc::Sender<SourceChangeEvent>) {
+    pub fn start_processing_loop(
+        &mut self,
+        source_id: String,
+        mut rx: mpsc::Receiver<MqttPacket>,
+        batch_tx: mpsc::Sender<SourceChangeEvent>,
+    ) {
         let pattern_matcher = Arc::clone(&self.mapper);
         self.processing_loop_handle = Some(tokio::spawn(async move {
             Self::run_processing_loop(source_id.to_string(), pattern_matcher, rx, batch_tx).await;
         }));
     }
 
-    pub fn start_adaptive_batcher_loop(&mut self, source_id: String, batch_rx: mpsc::Receiver<SourceChangeEvent>, dispatchers: Arc<tokio::sync::RwLock<Vec<Box<dyn drasi_lib::channels::ChangeDispatcher<SourceEventWrapper> + Send + Sync>>>>, adaptive_config: AdaptiveBatchConfig) {
-        if self.adaptive {
-            self.processing_loop_handle = Some(tokio::spawn(async move {
-                Self::run_adaptive_batcher_loop(batch_rx, dispatchers, adaptive_config, source_id).await;
-            }));
-        }
+    pub fn start_adaptive_batcher_loop(
+        &mut self,
+        source_id: String,
+        batch_rx: mpsc::Receiver<SourceChangeEvent>,
+        dispatchers: Arc<
+            tokio::sync::RwLock<
+                Vec<
+                    Box<
+                        dyn drasi_lib::channels::ChangeDispatcher<SourceEventWrapper> + Send + Sync,
+                    >,
+                >,
+            >,
+        >,
+        adaptive_config: AdaptiveBatchConfig,
+    ) {
+        self.adaptive_batcher_loop_handle = Some(tokio::spawn(async move {
+            Self::run_adaptive_batcher_loop(batch_rx, dispatchers, adaptive_config, source_id)
+                .await;
+        }));
     }
-
 
     //...... internal processing methods
 
     async fn run_adaptive_batcher_loop(
         batch_rx: mpsc::Receiver<SourceChangeEvent>,
-        dispatchers: Arc<tokio::sync::RwLock<Vec<Box<dyn drasi_lib::channels::ChangeDispatcher<SourceEventWrapper> + Send + Sync>>>>,
+        dispatchers: Arc<
+            tokio::sync::RwLock<
+                Vec<
+                    Box<
+                        dyn drasi_lib::channels::ChangeDispatcher<SourceEventWrapper> + Send + Sync,
+                    >,
+                >,
+            >,
+        >,
         adaptive_config: AdaptiveBatchConfig,
         source_id: String,
     ) {
@@ -159,9 +186,17 @@ impl MqttProcessor {
         );
     }
 
-    async fn run_processing_loop(source_id: String,matcher: Arc<PatternMatcher>, mut rx: mpsc::Receiver<MqttPacket>, batch_tx: mpsc::Sender<SourceChangeEvent>) {
+    async fn run_processing_loop(
+        source_id: String,
+        matcher: Arc<PatternMatcher>,
+        mut rx: mpsc::Receiver<MqttPacket>,
+        batch_tx: mpsc::Sender<SourceChangeEvent>,
+    ) {
         while let Some(packet) = rx.recv().await {
-            println!("Received message - Topic: {}, Payload: {:?}, Timestamp: {}", packet.topic, packet.payload, packet.timestamp);
+            println!(
+                "Received message - Topic: {}, Payload: {:?}, Timestamp: {}",
+                packet.topic, packet.payload, packet.timestamp
+            );
 
             // generate source changes from the packet and topic name
             let source_changes = Self::process(&matcher, &packet);
@@ -171,40 +206,44 @@ impl MqttProcessor {
         }
     }
 
-    fn process(mapper: &PatternMatcher, packet: &MqttPacket) -> Vec<MqttSourceChange>{
-
-        if let Ok(matched) = mapper.router.at(&packet.topic) {
-            // 1. Collect params into a readable format
-            let params_debug: String = matched
-                .params
-                .iter()
-                .map(|(key, val)| format!("{}={}", key, val))
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            // 2. Log everything using info!
-            info!(
-                "Route Matched! Value: {:?},\n Params: [{}],\n Path: {}",
-                matched.value, 
-                params_debug, 
-                packet.topic
-            );
-        } else {
-            info!("No match found for path: {}", packet.topic);
+    fn process(mapper: &PatternMatcher, packet: &MqttPacket) -> Vec<MqttSourceChange> {
+        match mapper.generate_schema(packet) {
+            Ok(changes) => changes,
+            Err(e) => {
+                error!(
+                    "Error processing MQTT packet with topic {}: {}",
+                    packet.topic, e
+                );
+                vec![]
+            }
         }
-
-        vec![]
     }
 
-    async fn send_to_batcher(source_id: &str, batch_tx: &mpsc::Sender<SourceChangeEvent>, source_changes: Vec<MqttSourceChange>) {
+    async fn send_to_batcher(
+        source_id: &str,
+        batch_tx: &mpsc::Sender<SourceChangeEvent>,
+        source_changes: Vec<MqttSourceChange>,
+    ) {
         let source_id = source_id.to_string();
         for (idx, change) in source_changes.into_iter().enumerate() {
-            match convert_mqtt_to_source_change_event(&change, &source_id) {
+            let timestamp = match change {
+                MqttSourceChange::Insert { timestamp, .. }
+                | MqttSourceChange::Update { timestamp, .. }
+                | MqttSourceChange::Delete { timestamp, .. } => timestamp.unwrap_or_else(|| {
+                    let now = std::time::SystemTime::now();
+                    now.duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64
+                }),
+            };
+            match convert_mqtt_to_source_change(&change, &source_id) {
                 Ok(source_change) => {
                     let change_event = SourceChangeEvent {
                         source_id: source_id.to_string(),
                         change: source_change,
-                        timestamp: chrono::Utc::now(),
+                        timestamp: chrono::DateTime::<chrono::Utc>::from(
+                            std::time::UNIX_EPOCH + std::time::Duration::from_millis(timestamp),
+                        ),
                     };
 
                     if let Err(e) = batch_tx.send(change_event).await {
@@ -217,8 +256,7 @@ impl MqttProcessor {
                             "[{}] Successfully sent change event to batcher for change {}",
                             source_id, idx
                         );
-                    } 
-
+                    }
                 }
                 Err(e) => {
                     error!(
@@ -228,6 +266,5 @@ impl MqttProcessor {
                 }
             }
         }
-
     }
 }

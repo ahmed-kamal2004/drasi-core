@@ -1,6 +1,7 @@
 use crate::adaptive_batcher::{AdaptiveBatchConfig, AdaptiveBatcher};
 use crate::config::MqttSourceConfig;
 use crate::connection::MqttConnection;
+use crate::processor::MqttProcessor;
 use crate::schema::MqttSourceChange;
 use drasi_core::evaluation::functions::async_trait;
 use drasi_core::models::SourceChange;
@@ -11,7 +12,6 @@ use drasi_lib::ComponentStatus;
 use drasi_lib::Source;
 use std::collections::HashMap;
 use std::os::unix::process;
-use crate::processor::MqttProcessor;
 
 use anyhow::Result;
 use log::{debug, error, info, trace, warn};
@@ -209,7 +209,6 @@ impl MQTTSource {
     pub fn adaptive_config(&self) -> &AdaptiveBatchConfig {
         &self.adaptive_config
     }
-
 }
 
 #[async_trait]
@@ -249,9 +248,6 @@ impl Source for MQTTSource {
         self.base.get_auto_start()
     }
 
-
-
-
     async fn start(&self) -> Result<()> {
         info!("[{}] Starting MQTT source", self.id());
 
@@ -264,8 +260,6 @@ impl Source for MQTTSource {
             )
             .await?;
 
-
-
         let source_id = self.base.id.clone();
         let instance_id = self
             .base
@@ -273,7 +267,6 @@ impl Source for MQTTSource {
             .await
             .map(|c| c.instance_id)
             .unwrap_or_default();
-
 
         // Start the subscriber
         let (error_tx, error_rx) = tokio::sync::oneshot::channel();
@@ -295,17 +288,20 @@ impl Source for MQTTSource {
         let batch_channel_capacity = self.adaptive_config.recommended_channel_capacity();
         let (batch_tx, batch_rx) = mpsc::channel::<SourceChangeEvent>(batch_channel_capacity);
 
-
         // start processor task
         let mut processor = MqttProcessor::new(source_id.clone(), &config);
         processor.start_processing_loop(source_id.clone(), processor_rx, batch_tx);
-
 
         // start adaptive batcher task
         let dispatchers = self.base.dispatchers.clone();
         let adaptive_config = self.adaptive_config.clone();
         let batcher_source_id = source_id.clone();
-        processor.start_adaptive_batcher_loop(batcher_source_id, batch_rx, dispatchers, adaptive_config);
+        processor.start_adaptive_batcher_loop(
+            batcher_source_id,
+            batch_rx,
+            dispatchers,
+            adaptive_config,
+        );
 
         // start mqtt connection task
         let server_handle = tokio::spawn(
@@ -313,8 +309,13 @@ impl Source for MQTTSource {
                 let (connection_shutdown_tx, connection_shutdown_rx) =
                     tokio::sync::oneshot::channel();
 
-                if let Err(error) =
-                    MqttConnection::new(source_id_for_task, &config, connection_shutdown_rx, processer_tx).await
+                if let Err(error) = MqttConnection::new(
+                    source_id_for_task,
+                    &config,
+                    connection_shutdown_rx,
+                    processer_tx,
+                )
+                .await
                 {
                     let _ = error_tx.send(error.to_string());
                     return;
@@ -343,13 +344,15 @@ impl Source for MQTTSource {
         self.base
             .send_component_event(
                 ComponentStatus::Running,
-                Some(format!("MQTT source running on {}:{}", self.config.broker_addr, self.config.port)),
+                Some(format!(
+                    "MQTT source running on {}:{}",
+                    self.config.broker_addr, self.config.port
+                )),
             )
             .await?;
 
         Ok(())
     }
-
 
     async fn stop(&self) -> Result<()> {
         info!("[{}] Stopping MQTT source", self.base.id);

@@ -20,9 +20,9 @@ use drasi_lib::identity::IdentityProvider;
 use rumqttc::v5::MqttOptions as MqttOptionsV5;
 use rumqttc::{MqttOptions, QoS};
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::collections::HashMap;
 use std::fmt;
-use serde_repr::{Serialize_repr, Deserialize_repr};
 
 pub fn default_broker_addr() -> String {
     "localhost".to_string()
@@ -89,8 +89,8 @@ pub struct MappingProperties {
     pub mode: MappingMode,
     pub field_name: Option<String>,
     /// JSON object mapping topic variables to graph properties
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inject: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inject: Vec<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -104,6 +104,7 @@ pub struct MappingRelation {
     pub label: String, // relation label
     pub from: String,  // label if the source node
     pub to: String,    // label of the destination node
+    pub id: String,    // relation id template
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

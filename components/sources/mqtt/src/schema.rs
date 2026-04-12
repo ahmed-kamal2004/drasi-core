@@ -62,7 +62,7 @@ pub fn map_json_to_mqtt_source_change(json_str: &str) -> Result<MqttSourceChange
     Ok(change)
 }
 
-pub fn convert_mqtt_to_source_change_event(
+pub fn convert_mqtt_to_source_change(
     mqtt_change: &MqttSourceChange,
     source_id: &str,
 ) -> Result<drasi_core::models::SourceChange> {

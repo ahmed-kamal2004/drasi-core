@@ -40,16 +40,26 @@ topic_mappings:
       mode: payload_as_field
       field_name: "val"
       inject:
-        type: "{type}"
+      - type: "{type}"
   - pattern: "building/{floor}/{room}/{device}"
     entity:
-      label: "welcome"
+      label: "DEVICE"
       id: "{room}:{device}"
     properties:
       mode: payload_as_field
-      field_name: "{message}"
+      field_name: "read"
       inject:
-        type: "{welcome}"
+      - type: "{room}"
+    nodes:
+      - label: "FLOOR"
+        id: "{floor}"
+      - label: "ROOM"
+        id: "{room}"
+    relations:
+      - label: "CONTAINS"
+        from: "FLOOR"
+        to: "ROOM"
+        id: "{floor}_contains_{room}"
 event_channel_capacity: 20
 adaptive_enabled: false
 "#;
@@ -66,9 +76,9 @@ adaptive_enabled: false
     let all_readings_query = Query::cypher("all-readings")
         .query(
             r#"
-            MATCH (rd:readings)
-            RETURN rd.symbol AS symbol,
-                   rd.val AS val
+            MATCH (rd:DEVICE)
+            RETURN rd.type AS symbol,
+                   rd.read AS val
         "#,
         )
         .from_source("mqtt-source")
