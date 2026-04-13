@@ -4,7 +4,7 @@ use drasi_lib::Query;
 use drasi_reaction_log::LogReaction;
 use drasi_reaction_log::{QueryConfig, TemplateSpec};
 use drasi_source_mqtt::config::MqttSourceConfig;
-use drasi_source_mqtt::MQTTSource;
+use drasi_source_mqtt::MqttSource;
 use std::sync::Arc;
 
 use axum::{
@@ -21,8 +21,8 @@ async fn main() -> Result<()> {
     println!("║     DrasiLib Temperature Monitor Example   ║");
     println!("╚════════════════════════════════════════════╝\n");
 
-    // TODO: Add bootstrapper
 
+    // Add MqttSource configuration
     let source_config_yaml = r#"
 broker_addr: "localhost"
 port: 9001
@@ -38,7 +38,7 @@ topic_mappings:
       id: "symbol"
     properties:
       mode: payload_as_field
-      field_name: "val"
+      field_name: "{type}"
       inject:
       - type: "{type}"
   - pattern: "building/{floor}/{room}/{device}"
@@ -47,7 +47,7 @@ topic_mappings:
       id: "{room}:{device}"
     properties:
       mode: payload_as_field
-      field_name: "read"
+      field_name: "reading"
       inject:
       - type: "{room}"
     nodes:
@@ -61,24 +61,26 @@ topic_mappings:
         to: "ROOM"
         id: "{floor}_contains_{room}"
 event_channel_capacity: 20
-adaptive_enabled: false
+adaptive_max_batch_size: 10000
+adaptive_min_batch_size: 30
+adaptive_max_wait_ms: 1000000
+adaptive_min_wait_ms: 100000
+adaptive_enabled: true
 "#;
-
-    // adaptive_max_batch_size: 3
-    // adaptive_min_batch_size: 1
-    // adaptive_max_wait_ms: 1000
     let source_config: MqttSourceConfig = serde_yaml::from_str(source_config_yaml)?;
 
-    let mqtt_source = MQTTSource::builder("mqtt-source")
+    // Build MqttSource with the configuration
+    let mqtt_source = MqttSource::builder("mqtt-source")
         .with_config(source_config)
         .build()?;
 
+    // Define the query to read all device readings
     let all_readings_query = Query::cypher("all-readings")
         .query(
             r#"
             MATCH (rd:DEVICE)
-            RETURN rd.type AS symbol,
-                   rd.read AS val
+            RETURN rd.type AS type,
+                   rd.reading as val
         "#,
         )
         .from_source("mqtt-source")
@@ -86,27 +88,32 @@ adaptive_enabled: false
         .enable_bootstrap(true)
         .build();
 
+    
+    // Define a log reaction to print query results to console
     let default_template = QueryConfig {
         added: Some(TemplateSpec {
-            template: "[{{query_name}}] + {{after.symbol}}: ${{after.val}}".to_string(),
+            template: "[{{query_name}}] + {{after.type}}: ${{after.val}}".to_string(),
             ..Default::default()
         }),
         updated: Some(TemplateSpec {
-            template: "[{{query_name}}] ~ {{after.symbol}}: ${{before.val}} -> ${{after.val}}"
+            template: "[{{query_name}}] ~ {{after.type}}: ${{before.val}} -> ${{after.val}}"
                 .to_string(),
             ..Default::default()
         }),
         deleted: Some(TemplateSpec {
-            template: "[{{query_name}}] - {{before.symbol}} removed".to_string(),
+            template: "[{{query_name}}] - {{before.type}} removed".to_string(),
             ..Default::default()
         }),
     };
 
+    // Build the log reaction
     let log_reaction = LogReaction::builder("console-logger")
         .from_query("all-readings")
         .with_default_template(default_template)
         .build()?;
 
+
+    // Build the DrasiLib core with the MQTT source, query, and reaction
     let core = Arc::new(
         DrasiLib::builder()
             .with_id("monitor")
@@ -117,6 +124,7 @@ adaptive_enabled: false
             .await?,
     );
 
+    // Start the core
     println!("\n>>> Starting DrasiLib core...");
     core.start().await?;
     println!(">>> Core started successfully");

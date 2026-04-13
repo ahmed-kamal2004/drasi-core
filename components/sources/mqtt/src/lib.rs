@@ -1,3 +1,17 @@
+// Copyright 2026 The Drasi Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 mod adaptive_batcher;
 pub mod config;
 pub mod connection;
@@ -6,52 +20,41 @@ mod time;
 
 use adaptive_batcher::AdaptiveBatchConfig;
 use config::{
-    default_broker_addr, default_event_channel_capacity, default_port, default_qos,
-    MqttConnectProperties, MqttSourceConfig, MqttSubscribeProperties, MqttTopicConfig,
-    MqttTransportMode, TopicMapping,
+    default_event_channel_capacity, default_host, default_port, default_qos, MqttConnectProperties,
+    MqttSourceConfig, MqttSubscribeProperties, MqttTopicConfig, MqttTransportMode, TopicMapping,
 };
-use drasi_core::evaluation::functions::async_trait;
 use drasi_lib::config::SourceSubscriptionSettings;
-use drasi_lib::queries::base;
 use drasi_lib::sources::base::{SourceBase, SourceBaseParams};
-use drasi_lib::ComponentStatus;
-use drasi_lib::Source;
-use std::collections::HashMap;
 
 use anyhow::Result;
-use log::{debug, error, info, trace, warn};
-use serde::{Deserialize, Serialize};
+use log::error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::timeout;
 
 use drasi_lib::channels::{ComponentType, *};
-use drasi_lib::SourceRuntimeContext;
-use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, Packet, QoS};
-use tracing::Instrument;
+use drasi_lib::{Source, SourceRuntimeContext};
 mod mqtt;
 mod pattern;
 mod processor;
 mod utils;
 
 pub use config::MqttQoS;
-pub use mqtt::MQTTSource;
+pub use mqtt::MqttSource;
 pub use schema::{MqttElement, MqttSourceChange};
-/// TODO: Complete the mqtt builder
 
-/// Builder for MQTTSource instances.
+/// Builder for MqttSource instances.
 ///
 /// Provides a fluent API for constructing MQTT sources with sensible defaults
 /// and adaptive batching settings. The builder takes the source ID at construction
-/// and returns a fully constructed `MQTTSource` from `build()`.
+/// and returns a fully constructed `MqttSource` from `build()`.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use drasi_source_mqtt::MQTTSource;
+/// use drasi_source_mqtt::MqttSource;
 ///
-/// let source = MQTTSource::builder("my-source")
+/// let source = MqttSource::builder("my-source")
 ///     .with_host("0.0.0.0")
 ///     .with_port(8080)
 ///     .with_topic("my/mqtt/topic")
@@ -62,7 +65,7 @@ pub use schema::{MqttElement, MqttSourceChange};
 /// ```
 pub struct MQTTSourceBuilder {
     id: String,
-    broker_addr: String,
+    host: String,
     port: u16,
     topics: Vec<MqttTopicConfig>,
     topic_mappings: Vec<TopicMapping>,
@@ -97,7 +100,7 @@ impl MQTTSourceBuilder {
         let qos = default_qos();
         Self {
             id: id.into(),
-            broker_addr: default_broker_addr(),
+            host: default_host(),
             port: default_port(),
             topics: vec![MqttTopicConfig {
                 topic: "mqtt/topic".to_string(),
@@ -131,7 +134,7 @@ impl MQTTSourceBuilder {
     }
 
     pub fn with_host(mut self, host: impl Into<String>) -> Self {
-        self.broker_addr = host.into();
+        self.host = host.into();
         self
     }
 
@@ -286,7 +289,7 @@ impl MQTTSourceBuilder {
     }
 
     pub fn with_config(mut self, config: MqttSourceConfig) -> Self {
-        self.broker_addr = config.broker_addr;
+        self.host = config.host;
         self.port = config.port;
         self.identity_provider = config.identity_provider;
         self.topics = config.topics;
@@ -311,9 +314,9 @@ impl MQTTSourceBuilder {
         self
     }
 
-    pub fn build(self) -> Result<MQTTSource> {
+    pub fn build(self) -> Result<MqttSource> {
         let config = MqttSourceConfig {
-            broker_addr: self.broker_addr,
+            host: self.host,
             port: self.port,
             identity_provider: self.identity_provider,
             topics: self.topics,
@@ -336,6 +339,8 @@ impl MQTTSourceBuilder {
             adaptive_window_secs: self.adaptive_window_secs,
             adaptive_enabled: self.adaptive_enabled,
         };
+
+        config.validate()?;
 
         let mut params = SourceBaseParams::new(&self.id).with_auto_start(self.auto_start);
         if let Some(mode) = self.dispatch_mode {
@@ -369,7 +374,7 @@ impl MQTTSourceBuilder {
             adaptive_config.adaptive_enabled = enabled;
         }
 
-        Ok(MQTTSource::from_parts(
+        Ok(MqttSource::from_parts(
             SourceBase::new(params)?,
             config,
             adaptive_config,
@@ -377,10 +382,10 @@ impl MQTTSourceBuilder {
     }
 }
 
-impl MQTTSource {
-    /// Create a builder for MQTTSource with the given ID.
+impl MqttSource {
+    /// Create a builder for MqttSource with the given ID.
     ///
-    /// This is the recommended way to construct an MQTTSource.
+    /// This is the recommended way to construct an MqttSource.
     ///
     /// # Arguments
     ///
@@ -389,7 +394,7 @@ impl MQTTSource {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let source = MQTTSource::builder("my-source")
+    /// let source = MqttSource::builder("my-source")
     ///     .with_host("0.0.0.0")
     ///     .with_port(8080)
     ///     .with_topic("my/mqtt/topic")
@@ -433,7 +438,7 @@ mod tests {
         #[test]
         fn test_with_dispatch_creates_source() {
             let config = MqttSourceConfig {
-                broker_addr: "localhost".to_string(),
+                host: "localhost".to_string(),
                 port: 8080,
                 identity_provider: None,
                 topics: vec![MqttTopicConfig {
@@ -459,7 +464,7 @@ mod tests {
                 adaptive_window_secs: None,
                 adaptive_enabled: None,
             };
-            let source = MQTTSource::with_dispatch(
+            let source = MqttSource::with_dispatch(
                 "dispatch-source",
                 config,
                 Some(DispatchMode::Channel),
@@ -501,7 +506,7 @@ mod tests {
             let props = source.properties();
 
             assert_eq!(
-                props.get("broker_addr"),
+                props.get("host"),
                 Some(&serde_json::Value::String("192.168.1.1".to_string()))
             );
             assert_eq!(
@@ -573,7 +578,7 @@ mod tests {
                 .build()
                 .unwrap();
 
-            assert_eq!(source.config().broker_addr, "api.example.com");
+            assert_eq!(source.config().host, "api.example.com");
             assert_eq!(source.config().port, 9000);
             assert_eq!(source.config().topics[0].topic, "/webhook".to_string());
             assert_eq!(source.config().conn_timeout, Some(5000));
@@ -602,7 +607,7 @@ mod tests {
 
         #[test]
         fn test_builder_id() {
-            let source = MQTTSource::builder("my-mqtt-source")
+            let source = MqttSource::builder("my-mqtt-source")
                 .with_host("localhost")
                 .build()
                 .unwrap();

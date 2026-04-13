@@ -1,15 +1,26 @@
+// Copyright 2026 The Drasi Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use crate::adaptive_batcher::{AdaptiveBatchConfig, AdaptiveBatcher};
-use crate::mqtt::MqttAppState;
 use crate::schema::{convert_mqtt_to_source_change, MqttSourceChange};
 use crate::utils::MqttPacket;
 use crate::{config::MqttSourceConfig, pattern::PatternMatcher};
-use drasi_core::evaluation::variable_value::de;
 use drasi_lib::channels::SourceChangeEvent;
 use drasi_lib::channels::{SourceEvent, SourceEventWrapper};
-use drasi_lib::{Source, SourceBase};
-use log::{debug, error, info, trace};
-use std::vec;
-use std::{os::unix::process, sync::Arc};
+use drasi_lib::SourceBase;
+use log::{debug, error, info};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -24,17 +35,13 @@ pub struct MqttProcessor {
 impl MqttProcessor {
     //...... public methods
 
-    pub fn new(source_id: impl Into<String>, config: &MqttSourceConfig) -> Self {
-        let mapper: Arc<PatternMatcher> = Arc::new(PatternMatcher::new(&config.topic_mappings));
-
-        let mut processor = Self {
-            mapper,
+    pub fn new(config: &MqttSourceConfig) -> Self {
+        Self {
+            mapper: Arc::new(PatternMatcher::new(&config.topic_mappings)),
             processing_loop_handle: None,
             adaptive_batcher_loop_handle: None,
             adaptive: config.adaptive_enabled.unwrap_or(false),
-        };
-
-        processor
+        }
     }
 
     pub fn start_processing_loop(
@@ -103,12 +110,6 @@ impl MqttProcessor {
                 );
                 continue;
             }
-
-            println!(
-                "[{}] MQTT Batcher received batch of {} events, processing...",
-                source_id,
-                batch.len()
-            );
 
             let batch_size = batch.len();
 
@@ -193,11 +194,6 @@ impl MqttProcessor {
         batch_tx: mpsc::Sender<SourceChangeEvent>,
     ) {
         while let Some(packet) = rx.recv().await {
-            println!(
-                "Received message - Topic: {}, Payload: {:?}, Timestamp: {}",
-                packet.topic, packet.payload, packet.timestamp
-            );
-
             // generate source changes from the packet and topic name
             let source_changes = Self::process(&matcher, &packet);
 

@@ -1,10 +1,22 @@
-use core::panic;
-use std::os::unix::process;
-use std::{option, time::Duration};
+// Copyright 2026 The Drasi Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-use crate::config::{MqttQoS, MqttTransportMode};
-use crate::{config::MqttSourceConfig, mqtt};
-use drasi_core::evaluation::functions::async_trait;
+use std::time::Duration;
+
+use crate::config::{MqttQoS, MqttSourceConfig, MqttTransportMode};
+use crate::utils::MqttPacket;
+use log::{error, info};
 use rumqttc::v5::{
     AsyncClient as AsyncClientV5, EventLoop as EventLoopV5, MqttOptions as MqttOptionsV5,
 };
@@ -12,10 +24,6 @@ use rumqttc::{
     v5::{mqttbytes::v5::ConnectReturnCode, ConnectionError},
     AsyncClient, EventLoop, MqttOptions,
 };
-use tracing::event;
-
-use crate::utils::MqttPacket;
-use log::{debug, error, info, trace, warn};
 
 macro_rules! run_event_loop {
     ($event_loop:expr, $shutdown_rx:expr, $processer_tx:expr) => {
@@ -30,7 +38,6 @@ macro_rules! run_event_loop {
                         Ok(event) =>{
                             let packet = event.to_mqtt_packet();
                             if let Some(packet) = packet {
-                                info!("Received MQTT packet - Topic: {}, Payload: {:?}, Timestamp: {}", packet.topic, packet.payload, packet.timestamp);
                                 if let Err(e) = $processer_tx.send(packet).await {
                                         error!("Failed to send MQTT packet to processor: {:?}", e);
                                 }
@@ -114,11 +121,6 @@ pub enum MqttAsyncClientWrapper {
 enum MqttEventLoopWrapper {
     EventLoopV3 { event_loop: EventLoop },
     EventLoopV5 { event_loop: EventLoopV5 },
-}
-
-#[async_trait]
-trait MqttEventLoop {
-    async fn poll(&mut self) -> anyhow::Result<rumqttc::Event>;
 }
 
 pub(crate) struct MqttConnection {
@@ -298,7 +300,7 @@ impl MqttConnection {
         id: impl Into<String>,
         config: &MqttSourceConfig,
     ) -> MqttOptionsV5 {
-        let mut options = MqttOptionsV5::new(id, config.broker_addr.clone(), config.port);
+        let mut options = MqttOptionsV5::new(id, config.host.clone(), config.port);
 
         // Common between v5 and v3.1.1
         common_config_to_mqtt_options!(options, config);
@@ -323,7 +325,7 @@ impl MqttConnection {
     }
 
     fn config_to_mqtt_options_v3(id: impl Into<String>, config: &MqttSourceConfig) -> MqttOptions {
-        let mut options = MqttOptions::new(id, config.broker_addr.clone(), config.port);
+        let mut options = MqttOptions::new(id, config.host.clone(), config.port);
 
         // Common between v5 and v3.1.1
         common_config_to_mqtt_options!(options, config);
@@ -336,14 +338,8 @@ impl MqttConnection {
         }
 
         // v3 specific options
-        if let Some(max_incoming_packet_size) = config.max_incoming_packet_size {
-            options.set_max_packet_size(max_incoming_packet_size, max_incoming_packet_size);
-            // TODO
-        }
-
-        if let Some(max_outgoing_packet_size) = config.max_outgoing_packet_size {
-            options.set_max_packet_size(max_outgoing_packet_size, max_outgoing_packet_size);
-            // TODO
+        if let Some((incoming, outgoing)) = config.max_packet_sizes() {
+            options.set_max_packet_size(incoming, outgoing);
         }
 
         options

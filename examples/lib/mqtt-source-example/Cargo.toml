@@ -1,5 +1,5 @@
 [package]
-name = "with-mqtt-source"
+name = "mqtt-source-example"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -19,5 +19,5 @@ drasi-lib = { path = "../../../lib" }
 drasi-reaction-log = { path = "../../../components/reactions/log" }
 
 [[bin]]
-name = "with-mqtt-source"
+name = "mqtt-source-example"
 path = "main.rs"

@@ -1,19 +1,29 @@
-use drasi_core::evaluation::variable_value::de;
-use matchit::{Match, Params, Router};
-use serde_yaml::mapping;
+// Copyright 2026 The Drasi Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-use crate::schema::{convert_mqtt_to_source_change, MqttSourceChange};
+use matchit::{Params, Router};
+
+use crate::schema::MqttSourceChange;
 use crate::utils::MqttPacket;
 use crate::{
     config::{MappingMode, MappingNode, MappingRelation, TopicMapping},
-    MQTTSource, MqttElement,
+    MqttElement,
 };
-use drasi_core::models::{ElementMetadata, ElementReference};
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct PatternMatcher {
-    pub router: Router<TopicMapping>,
+    router: Router<TopicMapping>,
 }
 
 impl PatternMatcher {
@@ -181,11 +191,354 @@ impl PatternMatcher {
     }
 
     fn map_template(template: &str, params: &Params) -> String {
-        // needs unit_test
         let mut id = template.to_string();
         for (key, value) in params.iter() {
             id = id.replace(&format!("{{{}}}", key), value);
         }
         id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{MappingEntity, MappingProperties};
+    use bytes::Bytes;
+
+    fn topic_mapping(mode: MappingMode, field_name: Option<&str>) -> TopicMapping {
+        let resolved_field_name = match mode {
+            MappingMode::PayloadAsField => Some(field_name.unwrap_or("reading").to_string()),
+            MappingMode::PayloadSpread => None,
+        };
+
+        TopicMapping {
+            pattern: "building/{floor}/{room}/{device}".to_string(),
+            entity: MappingEntity {
+                label: "DEVICE".to_string(),
+                id: "{room}:{device}".to_string(),
+            },
+            properties: MappingProperties {
+                mode,
+                field_name: resolved_field_name,
+                inject: vec![std::collections::HashMap::from([
+                    ("floor".to_string(), "{floor}".to_string()),
+                    ("room".to_string(), "{room}".to_string()),
+                ])],
+            },
+            nodes: vec![
+                MappingNode {
+                    label: "FLOOR".to_string(),
+                    id: "{floor}".to_string(),
+                },
+                MappingNode {
+                    label: "ROOM".to_string(),
+                    id: "{room}".to_string(),
+                },
+            ],
+            relations: vec![
+                MappingRelation {
+                    label: "CONTAINS".to_string(),
+                    from: "FLOOR".to_string(),
+                    to: "ROOM".to_string(),
+                    id: "{floor}_contains_{room}".to_string(),
+                },
+                MappingRelation {
+                    label: "LOCATED_IN".to_string(),
+                    from: "DEVICE".to_string(),
+                    to: "ROOM".to_string(),
+                    id: "{room}_located_in_{device}".to_string(),
+                },
+            ],
+        }
+    }
+
+    fn packet(topic: &str, payload: &[u8], timestamp: u64) -> MqttPacket {
+        MqttPacket {
+            topic: topic.to_string(),
+            payload: Bytes::from(payload.to_vec()),
+            timestamp,
+        }
+    }
+
+    #[test]
+    fn generate_schema_returns_error_when_no_pattern_matches() {
+        let matcher = PatternMatcher::new(&vec![topic_mapping(
+            MappingMode::PayloadAsField,
+            Some("reading"),
+        )]);
+        let input = packet("sensors/temperature", br#"{"value":42}"#, 1);
+
+        let err = matcher
+            .generate_schema(&input)
+            .expect_err("expected no match error");
+
+        assert!(err.to_string().contains("No pattern matched"));
+    }
+
+    #[test]
+    fn generate_schema_payload_as_field_parses_json_and_adds_injected_fields() {
+        let matcher = PatternMatcher::new(&vec![topic_mapping(
+            MappingMode::PayloadAsField,
+            Some("reading"),
+        )]);
+        let input = packet("building/f1/r12/thermostat", br#"25"#, 12345);
+
+        let changes = matcher
+            .generate_schema(&input)
+            .expect("expected schema generation to succeed");
+
+        assert_eq!(changes.len(), 5);
+
+        match &changes[0] {
+            MqttSourceChange::Update { element, timestamp } => {
+                assert_eq!(*timestamp, Some(12345));
+                match element {
+                    MqttElement::Node {
+                        id,
+                        labels,
+                        properties,
+                    } => {
+                        assert_eq!(id, "r12:thermostat");
+                        assert_eq!(labels, &vec!["DEVICE".to_string()]);
+                        assert_eq!(
+                            properties.get("floor"),
+                            Some(&serde_json::Value::String("f1".to_string()))
+                        );
+                        assert_eq!(
+                            properties.get("room"),
+                            Some(&serde_json::Value::String("r12".to_string()))
+                        );
+                        assert_eq!(
+                            properties.get("reading"),
+                            Some(&serde_json::Value::Number(25.into()))
+                        );
+                    }
+                    _ => panic!("first change should be node update"),
+                }
+            }
+            _ => panic!("first change should be update"),
+        }
+    }
+
+    #[test]
+    fn generate_schema_payload_as_field_falls_back_to_string_for_non_json_payload() {
+        let matcher = PatternMatcher::new(&vec![topic_mapping(
+            MappingMode::PayloadAsField,
+            Some("reading"),
+        )]);
+        let input = packet("building/f2/r3/sensor", b"plain-text", 100);
+
+        let changes = matcher
+            .generate_schema(&input)
+            .expect("expected schema generation to succeed");
+
+        match &changes[0] {
+            MqttSourceChange::Update { element, .. } => match element {
+                MqttElement::Node { properties, .. } => {
+                    assert_eq!(
+                        properties.get("reading"),
+                        Some(&serde_json::Value::String("plain-text".to_string()))
+                    );
+                }
+                _ => panic!("first change should be node update"),
+            },
+            _ => panic!("first change should be update"),
+        }
+    }
+
+    #[test]
+    fn generate_schema_payload_spread_merges_payload_object_and_injected_fields() {
+        let matcher = PatternMatcher::new(&vec![topic_mapping(MappingMode::PayloadSpread, None)]);
+        let input = packet(
+            "building/f3/r9/hvac",
+            br#"{"status":"ok","room":"payload-room"}"#,
+            999,
+        );
+
+        let changes = matcher
+            .generate_schema(&input)
+            .expect("expected schema generation to succeed");
+
+        match &changes[0] {
+            MqttSourceChange::Update { element, .. } => match element {
+                MqttElement::Node { properties, .. } => {
+                    assert_eq!(
+                        properties.get("status"),
+                        Some(&serde_json::Value::String("ok".to_string()))
+                    );
+                    assert_eq!(
+                        properties.get("room"),
+                        Some(&serde_json::Value::String("r9".to_string()))
+                    );
+                    assert_eq!(
+                        properties.get("floor"),
+                        Some(&serde_json::Value::String("f3".to_string()))
+                    );
+                }
+                _ => panic!("first change should be node update"),
+            },
+            _ => panic!("first change should be update"),
+        }
+    }
+
+    #[test]
+    fn generate_schema_payload_spread_with_non_object_payload_uses_only_injected_fields() {
+        let matcher = PatternMatcher::new(&vec![topic_mapping(MappingMode::PayloadSpread, None)]);
+        let input = packet("building/f4/r2/smoke", br#"34.5"#, 321);
+
+        let changes = matcher
+            .generate_schema(&input)
+            .expect("expected schema generation to succeed");
+
+        match &changes[0] {
+            MqttSourceChange::Update { element, .. } => match element {
+                MqttElement::Node { properties, .. } => {
+                    assert_eq!(properties.len(), 2);
+                    assert_eq!(
+                        properties.get("floor"),
+                        Some(&serde_json::Value::String("f4".to_string()))
+                    );
+                    assert_eq!(
+                        properties.get("room"),
+                        Some(&serde_json::Value::String("r2".to_string()))
+                    );
+                }
+                _ => panic!("first change should be node update"),
+            },
+            _ => panic!("first change should be update"),
+        }
+    }
+
+    #[test]
+    fn generate_schema_creates_hierarchy_nodes_and_relations_with_timestamp() {
+        let matcher = PatternMatcher::new(&vec![topic_mapping(MappingMode::PayloadSpread, None)]);
+        let input = packet("building/f6/r8/light", br#"{"lux":90}"#, 777);
+
+        let changes = matcher
+            .generate_schema(&input)
+            .expect("expected schema generation to succeed");
+
+        assert_eq!(changes.len(), 5);
+
+        match &changes[1] {
+            MqttSourceChange::Update { element, timestamp } => {
+                assert_eq!(*timestamp, Some(777));
+                match element {
+                    MqttElement::Node { id, labels, .. } => {
+                        assert_eq!(id, "f6");
+                        assert_eq!(labels, &vec!["FLOOR".to_string()]);
+                    }
+                    _ => panic!("second change should be floor node"),
+                }
+            }
+            _ => panic!("second change should be update"),
+        }
+
+        match &changes[2] {
+            MqttSourceChange::Update { element, timestamp } => {
+                assert_eq!(*timestamp, Some(777));
+                match element {
+                    MqttElement::Node { id, labels, .. } => {
+                        assert_eq!(id, "r8");
+                        assert_eq!(labels, &vec!["ROOM".to_string()]);
+                    }
+                    _ => panic!("third change should be room node"),
+                }
+            }
+            _ => panic!("third change should be update"),
+        }
+
+        match &changes[3] {
+            MqttSourceChange::Update { element, timestamp } => {
+                assert_eq!(*timestamp, Some(777));
+                match element {
+                    MqttElement::Relation {
+                        id,
+                        labels,
+                        from,
+                        to,
+                        properties,
+                    } => {
+                        assert_eq!(id, "f6_contains_r8");
+                        assert_eq!(labels, &vec!["CONTAINS".to_string()]);
+                        assert_eq!(from, "FLOOR");
+                        assert_eq!(to, "ROOM");
+                        assert!(properties.is_empty());
+                    }
+                    _ => panic!("fourth change should be relation"),
+                }
+            }
+            _ => panic!("fourth change should be update"),
+        }
+
+        match &changes[4] {
+            MqttSourceChange::Update { element, timestamp } => {
+                assert_eq!(*timestamp, Some(777));
+                match element {
+                    MqttElement::Relation {
+                        id,
+                        labels,
+                        from,
+                        to,
+                        properties,
+                    } => {
+                        assert_eq!(id, "r8_located_in_light");
+                        assert_eq!(labels, &vec!["LOCATED_IN".to_string()]);
+                        assert_eq!(from, "DEVICE");
+                        assert_eq!(to, "ROOM");
+                        assert!(properties.is_empty());
+                    }
+                    _ => panic!("fifth change should be relation"),
+                }
+            }
+            _ => panic!("fifth change should be update"),
+        }
+    }
+
+    #[test]
+    fn topic_mapping_defaults_field_name_for_payload_as_field() {
+        let matcher = PatternMatcher::new(&vec![topic_mapping(MappingMode::PayloadAsField, None)]);
+        let input = packet("building/f6/r8/light", br#"{"lux":90}"#, 777);
+
+        let changes = matcher
+            .generate_schema(&input)
+            .expect("expected schema generation to succeed");
+
+        match &changes[0] {
+            MqttSourceChange::Update { element, .. } => match element {
+                MqttElement::Node { properties, .. } => {
+                    assert_eq!(
+                        properties.get("reading"),
+                        Some(&serde_json::json!({"lux":90}))
+                    );
+                }
+                _ => panic!("first change should be node update"),
+            },
+            _ => panic!("first change should be update"),
+        }
+    }
+
+    #[test]
+    fn topic_mapping_ignores_field_name_for_payload_spread() {
+        let matcher = PatternMatcher::new(&vec![topic_mapping(
+            MappingMode::PayloadSpread,
+            Some("bad"),
+        )]);
+        let input = packet("building/f6/r8/light", br#"{"lux":90}"#, 777);
+
+        let changes = matcher
+            .generate_schema(&input)
+            .expect("expected schema generation to succeed");
+
+        match &changes[0] {
+            MqttSourceChange::Update { element, .. } => match element {
+                MqttElement::Node { properties, .. } => {
+                    assert_eq!(properties.get("lux"), Some(&serde_json::json!(90)));
+                    assert_eq!(properties.get("bad"), None);
+                }
+                _ => panic!("first change should be node update"),
+            },
+            _ => panic!("first change should be update"),
+        }
     }
 }

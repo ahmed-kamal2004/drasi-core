@@ -1,21 +1,30 @@
+// Copyright 2026 The Drasi Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use crate::adaptive_batcher::{AdaptiveBatchConfig, AdaptiveBatcher};
 use crate::config::MqttSourceConfig;
 use crate::connection::MqttConnection;
 use crate::processor::MqttProcessor;
-use crate::schema::MqttSourceChange;
 use drasi_core::evaluation::functions::async_trait;
-use drasi_core::models::SourceChange;
 use drasi_lib::config::SourceSubscriptionSettings;
-use drasi_lib::queries::base;
 use drasi_lib::sources::base::{SourceBase, SourceBaseParams};
 use drasi_lib::ComponentStatus;
 use drasi_lib::Source;
 use std::collections::HashMap;
-use std::os::unix::process;
 
 use anyhow::Result;
-use log::{debug, error, info, trace, warn};
-use serde::{Deserialize, Serialize};
+use log::info;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -36,7 +45,7 @@ use tracing::Instrument;
 /// - `base`: Common source functionality (dispatchers, status, lifecycle)
 /// - `config`: MQTT-specific configuration (host, port, timeout)
 /// - `adaptive_config`: Adaptive batching settings for throughput optimization
-pub struct MQTTSource {
+pub struct MqttSource {
     /// Base source implementation providing common functionality
     base: SourceBase,
     /// MQTT source configuration
@@ -45,24 +54,7 @@ pub struct MQTTSource {
     adaptive_config: AdaptiveBatchConfig,
 }
 
-/// Batch event request that can accept multiple events
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchEventRequest {
-    pub events: Vec<MqttSourceChange>,
-}
-
-/// MQTT source app state with batching channel.
-///
-/// Shared state passed to the MQTTConnectionWrapper::process_events.
-#[derive(Clone)]
-pub struct MqttAppState {
-    /// The source ID for validation against incoming requests
-    pub source_id: String,
-    /// Channel for sending events to the adaptive batcher
-    pub batch_tx: mpsc::Sender<SourceChangeEvent>,
-}
-
-impl MQTTSource {
+impl MqttSource {
     /// Create a new MQTT source.
     ///
     /// The event channel is automatically injected when the source is added
@@ -75,7 +67,7 @@ impl MQTTSource {
     ///
     /// # Returns
     ///
-    /// A new `MQTTSource` instance, or an error if construction fails.
+    /// A new `MqttSource` instance, or an error if construction fails.
     ///
     /// # Errors
     ///
@@ -84,7 +76,7 @@ impl MQTTSource {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use drasi_source_mqtt::{MQTTSource, MQTTSourceBuilder};
+    /// use drasi_source_mqtt::{MqttSource, MQTTSourceBuilder};
     ///
     /// let config = MQTTSourceBuilder::new()
     ///     .with_host("0.0.0.0")
@@ -93,7 +85,7 @@ impl MQTTSource {
     ///     .with_qos(QualityOfService::AtLeastOnce)
     ///     .build();
     ///
-    /// let source = MQTTSource::new("my-mqtt-source", config)?;
+    /// let source = MqttSource::new("my-mqtt-source", config)?;
     /// ```
     pub fn new(id: impl Into<String>, config: MqttSourceConfig) -> Result<Self> {
         let id = id.into();
@@ -141,7 +133,7 @@ impl MQTTSource {
     ///
     /// # Returns
     ///
-    /// A new `MQTTSource` instance with custom dispatch settings.
+    /// A new `MqttSource` instance with custom dispatch settings.
     ///
     /// # Errors
     ///
@@ -212,7 +204,7 @@ impl MQTTSource {
 }
 
 #[async_trait]
-impl Source for MQTTSource {
+impl Source for MqttSource {
     fn id(&self) -> &str {
         &self.base.id
     }
@@ -232,8 +224,8 @@ impl Source for MQTTSource {
             .collect();
 
         props.insert(
-            "broker_addr".to_string(),
-            serde_json::Value::String(self.config.broker_addr.clone()),
+            "host".to_string(),
+            serde_json::Value::String(self.config.host.clone()),
         );
         props.insert(
             "port".to_string(),
@@ -289,7 +281,7 @@ impl Source for MQTTSource {
         let (batch_tx, batch_rx) = mpsc::channel::<SourceChangeEvent>(batch_channel_capacity);
 
         // start processor task
-        let mut processor = MqttProcessor::new(source_id.clone(), &config);
+        let mut processor = MqttProcessor::new(&config);
         processor.start_processing_loop(source_id.clone(), processor_rx, batch_tx);
 
         // start adaptive batcher task
@@ -346,7 +338,7 @@ impl Source for MQTTSource {
                 ComponentStatus::Running,
                 Some(format!(
                     "MQTT source running on {}:{}",
-                    self.config.broker_addr, self.config.port
+                    self.config.host, self.config.port
                 )),
             )
             .await?;
