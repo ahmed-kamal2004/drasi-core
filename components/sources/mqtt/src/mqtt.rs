@@ -16,15 +16,16 @@ use crate::adaptive_batcher::{AdaptiveBatchConfig, AdaptiveBatcher};
 use crate::config::MqttSourceConfig;
 use crate::connection::MqttConnection;
 use crate::processor::MqttProcessor;
+use crate::MqttSourceBuilder;
 use drasi_core::evaluation::functions::async_trait;
 use drasi_lib::config::SourceSubscriptionSettings;
 use drasi_lib::sources::base::{SourceBase, SourceBaseParams};
-use drasi_lib::ComponentStatus;
 use drasi_lib::Source;
+use drasi_lib::{identity, ComponentStatus};
 use std::collections::HashMap;
 
 use anyhow::Result;
-use log::info;
+use log::{error, info};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -55,6 +56,30 @@ pub struct MqttSource {
 }
 
 impl MqttSource {
+    /// Create a builder for MqttSource with the given ID.
+    ///
+    /// This is the recommended way to construct an MqttSource.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Unique identifier for the source instance
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let source = MqttSource::builder("my-source")
+    ///     .with_host("0.0.0.0")
+    ///     .with_port(8080)
+    ///     .with_topic("my/mqtt/topic")
+    ///     .with_qos(MqttQoS::ONE)
+    ///     .with_adaptive_enabled(true)
+    ///     .with_bootstrap_provider(my_provider)
+    ///     .build().await?;
+    /// ```
+    pub fn builder(id: impl Into<String>) -> MqttSourceBuilder {
+        MqttSourceBuilder::new(id)
+    }
+
     /// Create a new MQTT source.
     ///
     /// The event channel is automatically injected when the source is added
@@ -76,47 +101,19 @@ impl MqttSource {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use drasi_source_mqtt::{MqttSource, MQTTSourceBuilder};
+    /// use drasi_source_mqtt::{MqttSource, MqttSourceBuilder};
     ///
-    /// let config = MQTTSourceBuilder::new()
+    /// let config = MqttSourceBuilder::new("my-mqtt-source")
     ///     .with_host("0.0.0.0")
     ///     .with_port(9001)
     ///     .with_topic("my/mqtt/topic")
     ///     .with_qos(QualityOfService::AtLeastOnce)
     ///     .build();
     ///
-    /// let source = MqttSource::new("my-mqtt-source", config)?;
+    /// let source = MqttSource::new("my-mqtt-source", config).await?;
     /// ```
-    pub fn new(id: impl Into<String>, config: MqttSourceConfig) -> Result<Self> {
-        let id = id.into();
-        let params = SourceBaseParams::new(id);
-
-        let mut adaptive_config = AdaptiveBatchConfig::default();
-
-        // Allow overriding adaptive parameters from config
-        if let Some(max_batch) = config.adaptive_max_batch_size {
-            adaptive_config.max_batch_size = max_batch;
-        }
-        if let Some(min_batch) = config.adaptive_min_batch_size {
-            adaptive_config.min_batch_size = min_batch;
-        }
-        if let Some(max_wait_ms) = config.adaptive_max_wait_ms {
-            adaptive_config.max_wait_time = Duration::from_millis(max_wait_ms);
-        }
-        if let Some(min_wait_ms) = config.adaptive_min_wait_ms {
-            adaptive_config.min_wait_time = Duration::from_millis(min_wait_ms);
-        }
-        if let Some(window_secs) = config.adaptive_window_secs {
-            adaptive_config.throughput_window = Duration::from_secs(window_secs);
-        }
-        if let Some(enabled) = config.adaptive_enabled {
-            adaptive_config.adaptive_enabled = enabled;
-        }
-        Ok(Self {
-            base: SourceBase::new(params)?,
-            config,
-            adaptive_config,
-        })
+    pub async fn new(id: impl Into<String>, config: MqttSourceConfig) -> Result<Self> {
+        Self::create_internal(id, config, None, None, None).await
     }
 
     /// Create a new MQTT source with custom dispatch settings.
@@ -138,60 +135,114 @@ impl MqttSource {
     /// # Errors
     ///
     /// Returns an error if the base source cannot be initialized.
-    pub fn with_dispatch(
+    pub async fn with_dispatch(
         id: impl Into<String>,
         config: MqttSourceConfig,
         dispatch_mode: Option<DispatchMode>,
         dispatch_buffer_capacity: Option<usize>,
     ) -> Result<Self> {
+        Self::create_internal(id, config, None, dispatch_mode, dispatch_buffer_capacity).await
+    }
+
+    pub async fn from_builder(
+        id: impl Into<String>,
+        config: MqttSourceConfig,
+        adaptive_config: Option<AdaptiveBatchConfig>,
+        dispatch_mode: Option<DispatchMode>,
+        dispatch_buffer_capacity: Option<usize>,
+    ) -> Result<Self> {
+        Self::create_internal(
+            id,
+            config,
+            adaptive_config,
+            dispatch_mode,
+            dispatch_buffer_capacity,
+        )
+        .await
+    }
+
+    async fn create_internal(
+        id: impl Into<String>,
+        config: MqttSourceConfig,
+        adaptive_config: Option<AdaptiveBatchConfig>,
+        dispatch_mode: Option<DispatchMode>,
+        dispatch_buffer_capacity: Option<usize>,
+    ) -> Result<Self> {
+        config.validate()?;
+
         let id = id.into();
         let mut params = SourceBaseParams::new(id);
 
+        // dispatching
         if let Some(mode) = dispatch_mode {
             params = params.with_dispatch_mode(mode);
         }
+
         if let Some(capacity) = dispatch_buffer_capacity {
             params = params.with_dispatch_buffer_capacity(capacity);
         }
 
-        let mut adaptive_config = AdaptiveBatchConfig::default();
-
-        if let Some(max_batch) = config.adaptive_max_batch_size {
-            adaptive_config.max_batch_size = max_batch;
-        }
-        if let Some(min_batch) = config.adaptive_min_batch_size {
-            adaptive_config.min_batch_size = min_batch;
-        }
-        if let Some(max_wait_ms) = config.adaptive_max_wait_ms {
-            adaptive_config.max_wait_time = Duration::from_millis(max_wait_ms);
-        }
-        if let Some(min_wait_ms) = config.adaptive_min_wait_ms {
-            adaptive_config.min_wait_time = Duration::from_millis(min_wait_ms);
-        }
-        if let Some(window_secs) = config.adaptive_window_secs {
-            adaptive_config.throughput_window = Duration::from_secs(window_secs);
-        }
-        if let Some(enabled) = config.adaptive_enabled {
-            adaptive_config.adaptive_enabled = enabled;
+        // identity provider
+        let base = SourceBase::new(params)?;
+        if let Some(iden_prov) = &config.identity_provider {
+            base.set_identity_provider(Arc::from(iden_prov.clone_box()))
+                .await;
         }
 
-        Ok(Self {
-            base: SourceBase::new(params)?,
-            config,
-            adaptive_config,
-        })
+        // adaptive batching
+        if let Some(adaptive_config) = adaptive_config {
+            Ok(Self {
+                base,
+                config,
+                adaptive_config,
+            })
+        } else {
+            let mut adaptive_config_internal = AdaptiveBatchConfig::default();
+
+            if let Some(max_batch) = config.adaptive_max_batch_size {
+                adaptive_config_internal.max_batch_size = max_batch;
+            }
+            if let Some(min_batch) = config.adaptive_min_batch_size {
+                adaptive_config_internal.min_batch_size = min_batch;
+            }
+            if let Some(max_wait_ms) = config.adaptive_max_wait_ms {
+                adaptive_config_internal.max_wait_time = Duration::from_millis(max_wait_ms);
+            }
+            if let Some(min_wait_ms) = config.adaptive_min_wait_ms {
+                adaptive_config_internal.min_wait_time = Duration::from_millis(min_wait_ms);
+            }
+            if let Some(window_secs) = config.adaptive_window_secs {
+                adaptive_config_internal.throughput_window = Duration::from_secs(window_secs);
+            }
+            if let Some(enabled) = config.adaptive_enabled {
+                adaptive_config_internal.adaptive_enabled = enabled;
+            }
+
+            Ok(Self {
+                base,
+                config,
+                adaptive_config: adaptive_config_internal,
+            })
+        }
     }
 
-    pub(crate) fn from_parts(
+    pub(crate) async fn from_parts(
         base: SourceBase,
         config: MqttSourceConfig,
         adaptive_config: AdaptiveBatchConfig,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        config.validate()?;
+
+        if let Some(iden_prov) = &config.identity_provider {
+            base.set_identity_provider(Arc::from(iden_prov.clone_box()))
+                .await;
+        }
+
+        Ok(Self {
             base,
             config,
             adaptive_config,
-        }
+        })
     }
 
     pub fn config(&self) -> &MqttSourceConfig {
@@ -216,13 +267,6 @@ impl Source for MqttSource {
     fn properties(&self) -> std::collections::HashMap<String, serde_json::Value> {
         let mut props = HashMap::new();
 
-        let topics = self
-            .config
-            .topics
-            .iter()
-            .map(|topic| serde_json::Value::String(topic.topic.clone()))
-            .collect();
-
         props.insert(
             "host".to_string(),
             serde_json::Value::String(self.config.host.clone()),
@@ -231,7 +275,43 @@ impl Source for MqttSource {
             "port".to_string(),
             serde_json::Value::Number(self.config.port.into()),
         );
-        props.insert("topics".to_string(), serde_json::Value::Array(topics));
+        props.insert(
+            "event_channel_capacity".to_string(),
+            serde_json::Value::Number(self.config.event_channel_capacity.into()),
+        );
+        if let Some(adaptive_enabled) = self.config.adaptive_enabled.as_ref() {
+            props.insert(
+                "adaptive_enabled".to_string(),
+                serde_json::Value::Bool(*adaptive_enabled),
+            );
+        } else {
+            props.insert(
+                "adaptive_enabled".to_string(),
+                serde_json::Value::Bool(false),
+            );
+        }
+
+        if let Some(conn_timeout) = self.config.conn_timeout.as_ref() {
+            props.insert(
+                "connection_timeout_seconds".to_string(),
+                serde_json::Value::Number((*conn_timeout).into()),
+            );
+        }
+
+        if let Some(keep_alive) = self.config.keep_alive.as_ref() {
+            props.insert(
+                "keep_alive_seconds".to_string(),
+                serde_json::Value::Number((*keep_alive).into()),
+            );
+        }
+
+        let topics_json = self
+            .config
+            .topics
+            .iter()
+            .map(|t| serde_json::Value::String(t.topic.clone()))
+            .collect();
+        props.insert("topics".to_string(), serde_json::Value::Array(topics_json));
 
         props
     }
@@ -243,7 +323,7 @@ impl Source for MqttSource {
     async fn start(&self) -> Result<()> {
         info!("[{}] Starting MQTT source", self.id());
 
-        // set the source status
+        // Set Source Status to starting
         self.base.set_status(ComponentStatus::Starting).await;
         self.base
             .send_component_event(
@@ -274,7 +354,7 @@ impl Source for MqttSource {
         let source_id_for_task = self.id().to_string();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
-        let (processer_tx, processor_rx) = mpsc::channel(100);
+        let (processor_tx, processor_rx) = mpsc::channel(self.config.event_channel_capacity);
 
         // create batch channel.
         let batch_channel_capacity = self.adaptive_config.recommended_channel_capacity();
@@ -287,30 +367,41 @@ impl Source for MqttSource {
         // start adaptive batcher task
         let dispatchers = self.base.dispatchers.clone();
         let adaptive_config = self.adaptive_config.clone();
-        let batcher_source_id = source_id.clone();
         processor.start_adaptive_batcher_loop(
-            batcher_source_id,
+            source_id.clone(),
             batch_rx,
             dispatchers,
             adaptive_config,
         );
 
+        // Set the identity provider for unified access (use inside the connection task for authenticating with MQTT broker if needed).
+        let identity_provider = self.base.identity_provider().await;
         // start mqtt connection task
         let server_handle = tokio::spawn(
             async move {
                 let (connection_shutdown_tx, connection_shutdown_rx) =
                     tokio::sync::oneshot::channel();
 
-                if let Err(error) = MqttConnection::new(
-                    source_id_for_task,
-                    &config,
-                    connection_shutdown_rx,
-                    processer_tx,
-                )
-                .await
-                {
-                    let _ = error_tx.send(error.to_string());
-                    return;
+                match MqttConnection::new(source_id_for_task, &config, identity_provider).await {
+                    Ok((mut connection, event_loop_wrapper)) => {
+                        if let Err(error) = connection
+                            .run_subscription_loop(
+                                connection_shutdown_rx,
+                                event_loop_wrapper,
+                                &config,
+                                processor_tx,
+                            )
+                            .await
+                        {
+                            let _ = error_tx.send(error.to_string());
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        error!("Failed to establish MQTT connection: {error:?}");
+                        let _ = error_tx.send(error.to_string());
+                        return;
+                    }
                 }
 
                 let _ = shutdown_rx.await;
@@ -332,7 +423,7 @@ impl Source for MqttSource {
             }
         }
 
-        // end, set status to running.
+        // Set Source Status to running
         self.base
             .send_component_event(
                 ComponentStatus::Running,

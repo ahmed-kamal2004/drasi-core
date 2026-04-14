@@ -97,17 +97,9 @@ impl MqttProcessor {
         let mut total_events = 0u64;
         let mut total_batches = 0u64;
 
-        info!(
-            "[{}] MQTT Batcher with config: {:?}",
-            source_id, adaptive_config
-        );
-
         while let Some(batch) = batcher.next_batch().await {
             if batch.is_empty() {
-                debug!(
-                    "[{}] MQTT Batcher received empty batch, skipping",
-                    source_id
-                );
+                debug!("[{source_id}] MQTT Batcher received empty batch, skipping");
                 continue;
             }
 
@@ -125,11 +117,7 @@ impl MqttProcessor {
 
             for (idx, event) in batch.into_iter().enumerate() {
                 debug!(
-                    "[{}] Batch #{}, dispatching event {}/{}",
-                    source_id,
-                    total_batches,
-                    idx + 1,
-                    batch_size
+                    "[{source_id}] Batch #{total_batches}, dispatching event {{idx + 1}}/{batch_size}"
                 );
 
                 let mut profiling = drasi_lib::profiling::ProfilingMetadata::new();
@@ -147,21 +135,12 @@ impl MqttProcessor {
                         .await
                 {
                     error!(
-                        "[{}] Batch #{}, failed to dispatch event {}/{} (no subscribers): {}",
-                        source_id,
-                        total_batches,
-                        idx + 1,
-                        batch_size,
-                        e
+                        "[{source_id}] Batch #{total_batches}, failed to dispatch event {{idx + 1}}/{batch_size} (no subscribers): {e}"
                     );
                     failed_count += 1;
                 } else {
                     debug!(
-                        "[{}] Batch #{}, successfully dispatched event {}/{}",
-                        source_id,
-                        total_batches,
-                        idx + 1,
-                        batch_size
+                        "[{source_id}] Batch #{total_batches}, successfully dispatched event {{idx + 1}}/{batch_size}"
                     );
                     sent_count += 1;
                 }
@@ -207,7 +186,7 @@ impl MqttProcessor {
             Ok(changes) => changes,
             Err(e) => {
                 error!(
-                    "Error processing MQTT packet with topic {}: {}",
+                    "Error processing Mqtt packet with topic {}: {}",
                     packet.topic, e
                 );
                 vec![]
@@ -228,7 +207,7 @@ impl MqttProcessor {
                 | MqttSourceChange::Delete { timestamp, .. } => timestamp.unwrap_or_else(|| {
                     let now = std::time::SystemTime::now();
                     now.duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("System time before UNIX EPOCH!")
                         .as_millis() as u64
                 }),
             };
@@ -244,20 +223,17 @@ impl MqttProcessor {
 
                     if let Err(e) = batch_tx.send(change_event).await {
                         error!(
-                            "[{}] Failed to send change event to batcher for change {}: {}",
-                            source_id, idx, e
+                            "[{source_id}] Failed to send change event to batcher for change {idx}: {e}"
                         );
                     } else {
                         debug!(
-                            "[{}] Successfully sent change event to batcher for change {}",
-                            source_id, idx
+                            "[{source_id}] Successfully sent change event to batcher for change {idx}",
                         );
                     }
                 }
                 Err(e) => {
                     error!(
-                        "[{}] Failed to convert MQTT change to source change for change {}: {}",
-                        source_id, idx, e
+                        "[{source_id}] Failed to convert MQTT change to source change for change {idx}: {e}"
                     );
                 }
             }

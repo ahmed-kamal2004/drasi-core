@@ -14,6 +14,7 @@
 
 use anyhow::Result;
 use core::time;
+use drasi_core::models::{ElementMetadata, ElementReference, SourceChange};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::vec::Vec;
@@ -75,16 +76,15 @@ pub fn convert_mqtt_to_source_change(
     mqtt_change: &MqttSourceChange,
     source_id: &str,
 ) -> Result<drasi_core::models::SourceChange> {
-    use drasi_core::models::{ElementMetadata, ElementReference, SourceChange};
     match mqtt_change {
         MqttSourceChange::Insert { element, timestamp } => {
             let element = create_element_from_mqtt(
                 element,
                 source_id,
                 timestamp.unwrap_or_else(|| {
-                    let now = std::time::SystemTime::now();
+                    let now = std::time::SystemTime::now(); // not reachable. timestamp should always be provided for inserts, but we default to current time just in case
                     now.duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("System time before UNIX EPOCH!")
                         .as_millis() as u64
                 }),
             )?;
@@ -95,9 +95,9 @@ pub fn convert_mqtt_to_source_change(
                 element,
                 source_id,
                 timestamp.unwrap_or_else(|| {
-                    let now = std::time::SystemTime::now();
+                    let now = std::time::SystemTime::now(); // not reachable. timestamp should always be provided for updates, but we default to current time just in case
                     now.duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("System time before UNIX EPOCH!")
                         .as_millis() as u64
                 }),
             )?;
@@ -120,9 +120,9 @@ pub fn convert_mqtt_to_source_change(
                         .unwrap_or_default(),
                 ),
                 effective_from: timestamp.unwrap_or_else(|| {
-                    let now = std::time::SystemTime::now();
+                    let now = std::time::SystemTime::now(); // not reachable. timestamp should always be provided for deletes, but we default to current time just in case
                     now.duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("System time before UNIX EPOCH!")
                         .as_millis() as u64
                 }),
             };

@@ -133,7 +133,7 @@ pub struct MqttConnectProperties {
 
 impl MqttConnectProperties {
     pub fn to_connection_properties(&self) -> rumqttc::v5::mqttbytes::v5::ConnectProperties {
-        let mut props = rumqttc::v5::mqttbytes::v5::ConnectProperties {
+        rumqttc::v5::mqttbytes::v5::ConnectProperties {
             session_expiry_interval: self.session_expiry_interval,
             receive_maximum: self.receive_maximum,
             max_packet_size: self.max_packet_size,
@@ -143,8 +143,7 @@ impl MqttConnectProperties {
             user_properties: self.user_properties.clone(),
             authentication_method: self.authentication_method.clone(),
             authentication_data: self.authentication_data.clone().map(Bytes::from),
-        };
-        props
+        }
     }
 }
 
@@ -154,6 +153,15 @@ pub struct MqttSubscribeProperties {
     pub id: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_properties: Vec<(String, String)>,
+}
+
+impl MqttSubscribeProperties {
+    pub fn to_subscribe_properties(&self) -> rumqttc::v5::mqttbytes::v5::SubscribeProperties {
+        rumqttc::v5::mqttbytes::v5::SubscribeProperties {
+            id: self.id,
+            user_properties: self.user_properties.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -327,8 +335,8 @@ impl MqttSourceConfig {
 
     pub fn max_packet_sizes(&self) -> Option<(usize, usize)> {
         if self.max_incoming_packet_size.is_some() && self.max_outgoing_packet_size.is_some() {
-            let incoming = self.max_incoming_packet_size.unwrap();
-            let outgoing = self.max_outgoing_packet_size.unwrap();
+            let incoming = self.max_incoming_packet_size?;
+            let outgoing = self.max_outgoing_packet_size?;
             Some((incoming, outgoing))
         } else {
             None
@@ -366,7 +374,7 @@ impl MqttSourceConfig {
                 Self::validate_template_placeholders(
                     value,
                     &allowed,
-                    &format!("properties.inject['{key}']", key = key),
+                    &format!("properties.inject['{key}']"),
                     &mapping.pattern,
                 )?;
             }
@@ -376,7 +384,7 @@ impl MqttSourceConfig {
             Self::validate_template_placeholders(
                 &node.id,
                 &allowed,
-                &format!("nodes[{idx}].id", idx = idx),
+                &format!("nodes[{idx}].id"),
                 &mapping.pattern,
             )?;
         }
@@ -385,7 +393,7 @@ impl MqttSourceConfig {
             Self::validate_template_placeholders(
                 &relation.id,
                 &allowed,
-                &format!("relations[{idx}].id", idx = idx),
+                &format!("relations[{idx}].id"),
                 &mapping.pattern,
             )?;
         }
@@ -401,19 +409,14 @@ impl MqttSourceConfig {
     ) -> anyhow::Result<()> {
         let placeholders = Self::extract_placeholders(template).map_err(|e| {
             anyhow::anyhow!(
-                "Invalid placeholder syntax in {field_name} for pattern '{}': {}",
-                pattern,
-                e
+                "Invalid placeholder syntax in {field_name} for pattern '{pattern}': {e}",
             )
         })?;
 
         for placeholder in placeholders {
             if !allowed.contains(&placeholder) {
                 return Err(anyhow::anyhow!(
-                    "Unknown placeholder '{{{}}}' in {} for pattern '{}'. Allowed placeholders come from the pattern.",
-                    placeholder,
-                    field_name,
-                    pattern
+                    "Unknown placeholder '{{{placeholder}}}' in {field_name} for pattern '{pattern}'. Allowed placeholders come from the pattern."
                 ));
             }
         }

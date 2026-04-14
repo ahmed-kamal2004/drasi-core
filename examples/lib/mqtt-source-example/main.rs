@@ -72,7 +72,7 @@ adaptive_enabled: true
     // Build MqttSource with the configuration
     let mqtt_source = MqttSource::builder("mqtt-source")
         .with_config(source_config)
-        .build()?;
+        .build().await?;
 
     // Define the query to read all device readings
     let all_readings_query = Query::cypher("all-readings")

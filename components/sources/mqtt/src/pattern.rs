@@ -20,6 +20,7 @@ use crate::{
     config::{MappingMode, MappingNode, MappingRelation, TopicMapping},
     MqttElement,
 };
+use log::{error, info};
 
 #[derive(Debug, Clone)]
 pub struct PatternMatcher {
@@ -30,7 +31,14 @@ impl PatternMatcher {
     pub fn new(topic_mappings: &Vec<TopicMapping>) -> Self {
         let mut router = Router::new();
         for mapping in topic_mappings {
-            router.insert(&mapping.pattern, mapping.clone()).unwrap();
+            if let Err(e) = router.insert(&mapping.pattern, mapping.clone()) {
+                error!(
+                    "Failed to insert topic mapping pattern '{}': {}",
+                    mapping.pattern, e
+                );
+            } else {
+                info!("Inserted topic mapping pattern: {}", mapping.pattern);
+            }
         }
         Self { router }
     }
@@ -45,10 +53,9 @@ impl PatternMatcher {
                 match Self::create_entity(mapping, &params, packet) {
                     Ok(change) => result.push(change),
                     Err(e) => {
-                        log::error!(
+                        error!(
                             "Error processing matched pattern for topic {}: {}",
-                            packet.topic,
-                            e
+                            packet.topic, e
                         );
                         return Err(e);
                     }
@@ -80,8 +87,12 @@ impl PatternMatcher {
         // payload parsing based on the mapping mode
         let mut properties = match &mapping.properties.mode {
             MappingMode::PayloadAsField => {
-                let field_name =
-                    Self::map_template(mapping.properties.field_name.as_ref().unwrap(), params);
+                let field_name = Self::map_template(
+                    mapping.properties.field_name.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("Field name is required for PayloadAsField mode")
+                    })?,
+                    params,
+                );
                 let mut props = serde_json::Map::new();
                 let val = serde_json::from_slice(&packet.payload).unwrap_or_else(|_| {
                     serde_json::Value::String(String::from_utf8_lossy(&packet.payload).into_owned())
@@ -93,12 +104,14 @@ impl PatternMatcher {
                 match serde_json::from_slice::<serde_json::Value>(&packet.payload) {
                     Ok(serde_json::Value::Object(map)) => map,
                     Ok(_) => {
-                        log::error!("Expected JSON object in payload for PayloadSpread mode, got different type. Defaulting to empty properties.");
-                        serde_json::Map::new()
+                        error!("Expected JSON object in payload for PayloadSpread mode, got different type.");
+                        return Err(anyhow::anyhow!("Expected JSON object in payload for PayloadSpread mode, got different type."));
                     }
                     Err(e) => {
-                        log::error!("Failed to parse payload as JSON for PayloadSpread mode: {}. Defaulting to empty properties.", e);
-                        serde_json::Map::new()
+                        error!("Failed to parse payload as JSON for PayloadSpread mode: {e}.");
+                        return Err(anyhow::anyhow!(
+                            "Failed to parse payload as JSON for PayloadSpread mode: {e}"
+                        ));
                     }
                 }
             }
@@ -164,7 +177,7 @@ impl PatternMatcher {
                 timestamp: Some(timestamp),
             });
         }
-        return result;
+        result
     }
 
     fn create_relations(
@@ -187,13 +200,13 @@ impl PatternMatcher {
                 timestamp: Some(timestamp),
             });
         }
-        return result;
+        result
     }
 
     fn map_template(template: &str, params: &Params) -> String {
         let mut id = template.to_string();
         for (key, value) in params.iter() {
-            id = id.replace(&format!("{{{}}}", key), value);
+            id = id.replace(&format!("{{{key}}}"), value);
         }
         id
     }
@@ -386,27 +399,13 @@ mod tests {
         let matcher = PatternMatcher::new(&vec![topic_mapping(MappingMode::PayloadSpread, None)]);
         let input = packet("building/f4/r2/smoke", br#"34.5"#, 321);
 
-        let changes = matcher
-            .generate_schema(&input)
-            .expect("expected schema generation to succeed");
-
-        match &changes[0] {
-            MqttSourceChange::Update { element, .. } => match element {
-                MqttElement::Node { properties, .. } => {
-                    assert_eq!(properties.len(), 2);
-                    assert_eq!(
-                        properties.get("floor"),
-                        Some(&serde_json::Value::String("f4".to_string()))
-                    );
-                    assert_eq!(
-                        properties.get("room"),
-                        Some(&serde_json::Value::String("r2".to_string()))
-                    );
-                }
-                _ => panic!("first change should be node update"),
-            },
-            _ => panic!("first change should be update"),
-        }
+        let changes = matcher.generate_schema(&input);
+        assert_eq!(changes.is_err(), true);
+        assert!(changes
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Expected JSON object in payload for PayloadSpread mode"));
     }
 
     #[test]
@@ -419,6 +418,25 @@ mod tests {
             .expect("expected schema generation to succeed");
 
         assert_eq!(changes.len(), 5);
+
+        match &changes[0] {
+            MqttSourceChange::Update { element, timestamp } => {
+                assert_eq!(*timestamp, Some(777));
+                match element {
+                    MqttElement::Node {
+                        id,
+                        labels,
+                        properties,
+                    } => {
+                        assert_eq!(id, "r8:light");
+                        assert_eq!(labels, &vec!["DEVICE".to_string()]);
+                        assert_eq!(properties.get("lux"), Some(&serde_json::json!(90)));
+                    }
+                    _ => panic!("first change should be device node"),
+                }
+            }
+            _ => panic!("first change should be update"),
+        }
 
         match &changes[1] {
             MqttSourceChange::Update { element, timestamp } => {
