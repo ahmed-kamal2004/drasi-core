@@ -208,9 +208,17 @@ pub enum MappingMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum InjectId {
+    True,
+    False,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct MappingProperties {
     pub mode: MappingMode,
     pub field_name: Option<String>,
+    pub inject_id: Option<InjectId>,
     /// JSON object mapping topic variables to graph properties
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inject: Vec<HashMap<String, String>>,
@@ -680,6 +688,7 @@ mod tests {
                 mode,
                 field_name: field_name.map(str::to_string),
                 inject: vec![HashMap::from([("room".to_string(), "{room}".to_string())])],
+                inject_id: Some(InjectId::True),
             },
             nodes: vec![MappingNode {
                 label: "FLOOR".to_string(),

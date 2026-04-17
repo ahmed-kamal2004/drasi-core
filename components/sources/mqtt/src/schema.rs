@@ -194,12 +194,14 @@ fn create_element_from_mqtt(
                 metadata,
                 properties: prop_map,
                 in_node: ElementReference {
-                    source_id: Arc::from(source_id),
-                    element_id: Arc::from(to.as_str()),
-                },
-                out_node: ElementReference {
+                    // start node
                     source_id: Arc::from(source_id),
                     element_id: Arc::from(from.as_str()),
+                },
+                out_node: ElementReference {
+                    // end node
+                    source_id: Arc::from(source_id),
+                    element_id: Arc::from(to.as_str()),
                 },
             })
         }
@@ -261,7 +263,7 @@ mod tests {
     fn sample_relation(properties: serde_json::Map<String, serde_json::Value>) -> MqttElement {
         MqttElement::Relation {
             id: "rel-1".to_string(),
-            labels: vec!["CONNECTED_TO".to_string()],
+            labels: vec!["DEVICE_TO_ROOM".to_string()],
             from: "device-1".to_string(),
             to: "room-7".to_string(),
             properties,
@@ -340,8 +342,8 @@ mod tests {
                 } => {
                     assert_eq!(metadata.reference.element_id.as_ref(), "rel-1");
                     assert_eq!(metadata.effective_from, 99);
-                    assert_eq!(out_node.element_id.as_ref(), "device-1");
-                    assert_eq!(in_node.element_id.as_ref(), "room-7");
+                    assert_eq!(out_node.element_id.as_ref(), "room-7");
+                    assert_eq!(in_node.element_id.as_ref(), "device-1");
                     assert_eq!(properties.get("weight"), Some(&ElementValue::Integer(42)));
                 }
                 _ => panic!("expected relation element"),
@@ -421,8 +423,8 @@ mod tests {
                 assert_eq!(metadata.reference.source_id.as_ref(), "src-a");
                 assert_eq!(metadata.effective_from, 123);
                 assert_eq!(out_node.source_id.as_ref(), "src-a");
-                assert_eq!(out_node.element_id.as_ref(), "device-1");
-                assert_eq!(in_node.element_id.as_ref(), "room-7");
+                assert_eq!(out_node.element_id.as_ref(), "room-7");
+                assert_eq!(in_node.element_id.as_ref(), "device-1");
                 assert_eq!(properties.get("online"), Some(&ElementValue::Bool(false)));
             }
             _ => panic!("expected relation element"),
