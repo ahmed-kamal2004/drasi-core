@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
 
     // Add MqttSource configuration
     let source_config_yaml = r#"
-broker_addr: "localhost"
+host: "localhost"
 port: 8883
 topics:
   - topic: "sensors/temperature"
@@ -61,11 +61,8 @@ topic_mappings:
         to: "ROOM"
         id: "{floor}_contains_{room}"
 event_channel_capacity: 20
-adaptive_max_batch_size: 10000
-adaptive_min_batch_size: 30
-adaptive_max_wait_ms: 1000000
-adaptive_min_wait_ms: 100000
-adaptive_enabled: true
+keep_alive: 5
+conn_timeout: 5
 transport:
     mode: tls
     config:
@@ -77,14 +74,20 @@ transport:
     let source_config: MqttSourceConfig = serde_yaml::from_str(source_config_yaml)?;
 
     // Build MqttSource with the configuration
-    let mqtt_source = MqttSource::builder("mqtt-source")
+    let mqtt_source = match MqttSource::builder("mqtt-source")
         .with_config(source_config)
         .with_identity_provider(PasswordIdentityProvider::new(
             "drasi".to_string(),
             "drasi".to_string(),
         ))
         .build()
-        .await?;
+        .await {
+        Ok(source) => source,
+        Err(e) => {
+            eprintln!("Failed to build MQTT source: {e}");
+            return Err(e);
+        }
+    };
 
     // Define the query to read all device readings
     let all_readings_query = Query::cypher("all-readings")
