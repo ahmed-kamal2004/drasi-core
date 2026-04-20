@@ -71,7 +71,6 @@ impl MqttSource {
     ///     .with_host("0.0.0.0")
     ///     .with_port(8080)
     ///     .with_topic("my/mqtt/topic")
-    ///     .with_qos(MqttQoS::ONE)
     ///     .with_adaptive_enabled(true)
     ///     .with_bootstrap_provider(my_provider)
     ///     .build().await?;
@@ -432,17 +431,19 @@ impl Source for MqttSource {
                         })
                         .await;
                 }
+                return Err(anyhow::anyhow!("Failed to start MQTT source: {error:?}"));
             }
         }
 
         *self.base.shutdown_tx.write().await = Some(shutdown_tx);
 
         // Set Source Status to running
+        self.base.set_status(ComponentStatus::Running).await;
         self.base
             .send_component_event(
                 ComponentStatus::Running,
                 Some(format!(
-                    "MQTT source running on {}:{}",
+                    "MQTT source is connected to broker at {}:{}",
                     self.config.host, self.config.port
                 )),
             )

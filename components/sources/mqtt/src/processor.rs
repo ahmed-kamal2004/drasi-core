@@ -205,12 +205,13 @@ impl MqttProcessor {
         let source_id = source_id.to_string();
         for (idx, change) in source_changes.into_iter().enumerate() {
             let timestamp = match change {
-                MqttSourceChange::Insert { timestamp, .. }
-                | MqttSourceChange::Update { timestamp, .. }
-                | MqttSourceChange::Delete { timestamp, .. } => timestamp.unwrap_or_else(|| {
+                MqttSourceChange::Update { timestamp, .. } => timestamp.unwrap_or_else(|| {
                     let now = std::time::SystemTime::now();
                     now.duration_since(std::time::UNIX_EPOCH)
-                        .expect("System time before UNIX EPOCH!")
+                        .unwrap_or_else(|e| {
+                            error!("System time is before UNIX EPOCH: {e}");
+                            std::time::Duration::from_millis(0)
+                        })
                         .as_millis() as u64
                 }),
             };

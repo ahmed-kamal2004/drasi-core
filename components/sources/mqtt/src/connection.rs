@@ -61,6 +61,7 @@ macro_rules! common_config_to_mqtt_options {
                 }
                 Err(e) => {
                     error!("Failed to retrieve credentials from identity provider for MQTT authentication: {e:?}");
+                    return Err(anyhow::anyhow!("Failed to retrieve credentials from identity provider for MQTT authentication: {e:?}"));
                 }
             }
         } else {
@@ -149,7 +150,7 @@ pub enum MqttEventLoopWrapper {
 }
 
 /// Mqtt connection manager that handles connection setup, authentication, and event loop management for both MQTT v5 and v3.1.1 brokers based on configuration and broker capabilities.
-pub(crate) struct MqttConnection {
+pub struct MqttConnection {
     client: MqttAsyncClientWrapper,
     event_loop_handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -309,7 +310,7 @@ impl MqttConnection {
 
         let (client_v5, mut event_loop_v5) =
             AsyncClientV5::new(options_v5, config.event_channel_capacity);
-        for trial in 0..3 {
+        for trial in 0..5 {
             match event_loop_v5.poll().await {
                 Ok(event) => {
                     info!("Successfully connected to MQTT broker using v5 options");
@@ -349,7 +350,7 @@ impl MqttConnection {
         let (client_v3, mut event_loop_v3) =
             AsyncClient::new(options_v3, config.event_channel_capacity);
 
-        for trial in 0..3 {
+        for trial in 0..5 {
             match event_loop_v3.poll().await {
                 Ok(event) => {
                     info!("Successfully connected to MQTT broker using v3 options");
@@ -417,7 +418,7 @@ impl MqttConnection {
         Ok(())
     }
 
-    async fn config_to_mqtt_options_v5(
+    pub async fn config_to_mqtt_options_v5(
         id: impl Into<String>,
         config: &MqttSourceConfig,
         identity_provider: Option<Arc<dyn drasi_lib::identity::IdentityProvider>>,
@@ -443,17 +444,12 @@ impl MqttConnection {
             options.set_connect_properties(connection_props);
         }
 
-        if let Some(connect_properties) = config.connect_properties.as_ref() {
-            let connection_properties = connect_properties.to_connection_properties();
-            options.set_connect_properties(connection_properties);
-        }
-
         // Subscribe properties are set during subscription, not connection, so they are handled in the subscribe_to_topics method
 
         Ok(options)
     }
 
-    async fn config_to_mqtt_options_v3(
+    pub async fn config_to_mqtt_options_v3(
         id: impl Into<String>,
         config: &MqttSourceConfig,
         identity_provider: Option<Arc<dyn drasi_lib::identity::IdentityProvider>>,
