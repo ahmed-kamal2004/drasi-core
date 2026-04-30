@@ -11,6 +11,7 @@ members = [
   "lib",
 
   # Shared component libraries
+  "components/batching-common",
   "components/mssql-common",
 
   # Bootstrap Plugins
@@ -122,10 +123,12 @@ drasi-bootstrap-postgres = { version = "0.1.15", path = "components/bootstrapper
 drasi-reaction-application = { version = "0.2.11", path = "components/reactions/application" }
 drasi-source-postgres = { version = "0.1.15", path = "components/sources/postgres" }
 drasi-source-application = { version = "0.1.14", path = "components/sources/application" }
+drasi-source-mqtt = { version = "0.1.0", path = "components/sources/mqtt" }
 drasi-bootstrap-application = { version = "0.1.13", path = "components/bootstrappers/application" }
 drasi-reaction-http = { version = "0.1.14", path = "components/reactions/http" }
 drasi-reaction-grpc = { version = "0.2.10", path = "components/reactions/grpc" }
 drasi-mssql-common = { version = "0.1.2", path = "components/mssql-common" }
+drasi-batching-common = { version = "0.1.0", path = "components/batching-common" }
 
 [workspace.lints.rust]
 warnings = "deny"
