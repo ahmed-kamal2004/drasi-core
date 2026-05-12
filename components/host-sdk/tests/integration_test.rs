@@ -1800,6 +1800,7 @@ async fn test_reaction_enqueue_query_result() {
     // Build a QueryResult and enqueue it via the host-managed path
     let query_result = drasi_lib::channels::QueryResult::new(
         "test-query".to_string(),
+        0,
         chrono::Utc::now(),
         vec![],
         std::collections::HashMap::new(),
@@ -1861,6 +1862,7 @@ async fn test_reaction_enqueue_multiple_query_results() {
         let query_id = if i % 2 == 0 { "q1" } else { "q2" };
         let result = drasi_lib::channels::QueryResult::new(
             query_id.to_string(),
+            0,
             chrono::Utc::now(),
             vec![],
             std::collections::HashMap::new(),
@@ -1922,10 +1924,12 @@ async fn test_reaction_enqueue_query_result_with_data() {
 
     let result_diff = ResultDiff::Add {
         data: serde_json::json!({"id": 1, "name": "test-entity", "value": 42}),
+        row_signature: 0,
     };
 
     let query_result = drasi_lib::channels::QueryResult {
         query_id: "data-query".to_string(),
+        sequence: 0,
         timestamp: chrono::Utc::now(),
         results: vec![result_diff],
         metadata,
@@ -1994,6 +1998,7 @@ async fn test_reaction_start_stop_stress() {
         for _ in 0..ENQUEUE_PER_ITER {
             let qr = drasi_lib::channels::QueryResult::new(
                 "stress-query".to_string(),
+                0,
                 chrono::Utc::now(),
                 vec![],
                 std::collections::HashMap::new(),
@@ -2490,6 +2495,7 @@ async fn test_cdylib_source_dispatches_events() {
         relations: std::collections::HashSet::new(),
         resume_from: None,
         request_position_handle: false,
+        last_sequence: None,
     };
     let sub = source.subscribe(settings).await.expect("Should subscribe");
     let receiver = sub.receiver;
@@ -2570,6 +2576,7 @@ async fn test_stress_rapid_subscribe_drop_under_load() {
             relations: std::collections::HashSet::new(),
             resume_from: None,
             request_position_handle: false,
+            last_sequence: None,
         };
         let sub = source.subscribe(settings).await.expect("Should subscribe");
         let mut receiver = sub.receiver;
